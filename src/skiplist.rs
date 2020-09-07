@@ -82,7 +82,7 @@ fn random_height() -> u8 {
 }
 
 #[repr(C)]
-pub struct JumpRope {
+pub struct SkipList {
     // The total number of characters in the rope
     // num_chars: usize,
 
@@ -93,9 +93,9 @@ pub struct JumpRope {
     // the rope.
     head: Node,
 
-    // This is so dirty. The first node is embedded in JumpRope; but we need to
+    // This is so dirty. The first node is embedded in SkipList; but we need to
     // allocate enough room for height to get arbitrarily large. I could insist
-    // on JumpRope always getting allocated on the heap, but for small strings
+    // on SkipList always getting allocated on the heap, but for small strings
     // its better that the first string is just on the stack.
     // So this struct is repr(C) and I'm just padding out the struct directly.
     nexts: [SkipEntry; MAX_HEIGHT+1],
@@ -234,9 +234,9 @@ fn str_get_byte_offset(s: &str, char_pos: usize) -> usize {
     )
 }
 
-impl JumpRope {
+impl SkipList {
     pub fn new() -> Self {
-        JumpRope {
+        SkipList {
             num_bytes: 0,
             // nexts: [SkipEntry::null_ptr(); MAX_HEIGHT],
 
@@ -549,7 +549,7 @@ impl JumpRope {
     }
 }
 
-impl Drop for JumpRope {
+impl Drop for SkipList {
     fn drop(&mut self) {
         let mut node = self.head.first_next().node;
         unsafe {
@@ -562,7 +562,7 @@ impl Drop for JumpRope {
     }
 }
 
-impl PartialEq for JumpRope {
+impl PartialEq for SkipList {
     // This is quite complicated. It would be cleaner to just write a bytes
     // iterator, then iterate over the bytes of both strings comparing along the
     // way.
@@ -572,7 +572,7 @@ impl PartialEq for JumpRope {
     // an iterator over &str. Then the rope vs rope comparison would be trivial,
     // but also we could add comparison functions with a single &str and stuff
     // very easily.
-    fn eq(&self, other: &JumpRope) -> bool {
+    fn eq(&self, other: &SkipList) -> bool {
         if self.num_bytes != other.num_bytes
                 || self.num_chars() != other.num_chars() {
             return false
@@ -614,22 +614,22 @@ impl PartialEq for JumpRope {
         true
     }
 }
-impl Eq for JumpRope {}
+impl Eq for SkipList {}
 
 
-impl<'a> From<&'a str> for JumpRope {
-    fn from(s: &str) -> JumpRope {
-        JumpRope::new_from_str(s)
+impl<'a> From<&'a str> for SkipList {
+    fn from(s: &str) -> SkipList {
+        SkipList::new_from_str(s)
     }
 }
 
-impl From<String> for JumpRope {
-    fn from(s: String) -> JumpRope {
-        JumpRope::new_from_str(s.as_str())
+impl From<String> for SkipList {
+    fn from(s: String) -> SkipList {
+        SkipList::new_from_str(s.as_str())
     }
 }
 
-impl<'a> Into<String> for &'a JumpRope {
+impl<'a> Into<String> for &'a SkipList {
     fn into(self) -> String {
         let mut content = String::with_capacity(self.num_bytes);
 
@@ -641,9 +641,9 @@ impl<'a> Into<String> for &'a JumpRope {
     }
 }
 
-impl Clone for JumpRope {
+impl Clone for SkipList {
     fn clone(&self) -> Self {
-        let mut r = JumpRope::new();
+        let mut r = SkipList::new();
         r.num_bytes = self.num_bytes;
         let head_str = self.head.as_str();
         r.head.str[..head_str.len()].copy_from_slice(head_str.as_bytes());
@@ -687,9 +687,9 @@ impl Clone for JumpRope {
     }
 }
 
-impl JumpRope {
+impl SkipList {
     // fn new() -> Self {
-    //     JumpRope::new()
+    //     SkipList::new()
     // }
 
     pub fn insert_at(&mut self, mut pos: usize, contents: &str) {

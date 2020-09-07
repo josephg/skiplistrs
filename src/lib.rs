@@ -4,5 +4,5 @@ extern crate rand;
 // pub use rope::{Rope, RopeError};
 
 // mod edittablestr;
-mod jumprope;
-pub use jumprope::*;
+mod skiplist;
+pub use skiplist::*;

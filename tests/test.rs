@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod test {
 
-    extern crate jumprope;
-    use self::jumprope::JumpRope;
+    extern crate skiplistrs;
+    use self::skiplistrs::SkipList;
 
     extern crate rand;
     use self::rand::Rng;
@@ -41,13 +41,13 @@ mod test {
         s
     }
 
-    fn check<'a>(r: &JumpRope, expected: &'a str) {
+    fn check<'a>(r: &SkipList, expected: &'a str) {
         r.check();
         // r.print();
         assert_eq!(r.to_string(), expected);
         assert_eq!(r.len(), expected.len());
         assert_eq!(r.char_len(), expected.chars().count());
-        assert!(*r == JumpRope::from(expected), "Rope comparison fails");
+        assert!(*r == SkipList::from(expected), "Rope comparison fails");
 
         let clone = r.clone();
         // clone.print();
@@ -57,7 +57,7 @@ mod test {
 
     #[test]
     fn empty_rope_has_no_contents() {
-        let mut r = JumpRope::new();
+        let mut r = SkipList::new();
         check(&r, "");
 
         r.insert_at(0, "");
@@ -66,7 +66,7 @@ mod test {
 
     #[test]
     fn insert_at_location() {
-        let mut r = JumpRope::new();
+        let mut r = SkipList::new();
 
         r.insert_at(0, "AAA");
         check(&r, "AAA");
@@ -83,10 +83,10 @@ mod test {
 
     #[test]
     fn new_string_has_content() {
-        let r = JumpRope::new_from_str("hi there");
+        let r = SkipList::new_from_str("hi there");
         check(&r, "hi there");
 
-        let mut r = JumpRope::new_from_str("κόσμε");
+        let mut r = SkipList::new_from_str("κόσμε");
         check(&r, "κόσμε");
         r.insert_at(2, "𝕐𝕆😘");
         check(&r, "κό𝕐𝕆😘σμε");
@@ -94,7 +94,7 @@ mod test {
 
     #[test]
     fn del_at_location() {
-        let mut r = JumpRope::new_from_str("012345678");
+        let mut r = SkipList::new_from_str("012345678");
 
         r.del_at(8, 1);
         check(&r, "01234567");
@@ -114,7 +114,7 @@ mod test {
 
     #[test]
     fn del_past_end_of_string() {
-        let mut r = JumpRope::new();
+        let mut r = SkipList::new();
 
         r.del_at(0, 100);
         check(&r, "");
@@ -129,7 +129,7 @@ mod test {
         let len = 2000;
         let s = random_ascii_string(len);
 
-        let mut r = JumpRope::new_from_str(s.as_str());
+        let mut r = SkipList::new_from_str(s.as_str());
         check(&r, s.as_str());
 
         // Delete everything but the first and last characters
@@ -189,7 +189,7 @@ mod test {
 
     #[test]
     fn random_edits() {
-        let mut r = JumpRope::new();
+        let mut r = SkipList::new();
         let mut s = String::new();
         
         let mut rng = rand::thread_rng();
