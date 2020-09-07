@@ -25,7 +25,8 @@ use an_rope::Rope as AnRope;
 extern crate xi_rope;
 use xi_rope::Rope as XiRope;
 
-const CHARS: &[u8; 83] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?,./";
+const CHARS: &[u8; _] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?,./";
+
 
 // Gross. Find a way to reuse the code from random_unicode_string.
 fn random_ascii_string(rng: &mut XorShiftRng, len: usize) -> String {

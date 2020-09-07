@@ -35,8 +35,14 @@ struct SkipEntry {
 
 // The node structure is designed in a very fancy way which would be more at home in C or something
 // like that. The basic idea is that the node structure is fixed size in memory, but the proportion
-// of that space taken up by characters and by the height are different depentant on a node's
+// of that space taken up by characters and by the height differ depending on a node's
 // height.
+
+// A different representation (which might be better or worse - I can't tell)
+// would be to have the nodes all be the same size in memory and change the
+// *proportion* of the node's memory that is used by the string field vs the
+// next pointers. That might be lighter weight for the allocator because the
+// struct itself would be a fixed size; but I'm not sure if it would be better.
 
 #[repr(C)] // Prevent parameter reordering.
 struct Node {
@@ -64,6 +70,7 @@ struct Node {
 fn test_align() {
     #[repr(C)] struct Check([SkipEntry; 0]);
     assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry>());
+    // TODO: It'd be good to also check the alignment of the nexts field in Node.
 }
 
 fn random_height() -> u8 {
@@ -99,7 +106,7 @@ pub struct JumpRope {
 
 
 impl SkipEntry {
-    fn new() -> Self {
+    fn null_ptr() -> Self {
         SkipEntry { node: ptr::null_mut(), skip_chars: 0 }
     }
 }
@@ -139,7 +146,7 @@ impl Node {
             };
 
             for next in (*node).nexts_mut() {
-                *next = SkipEntry::new();
+                *next = SkipEntry::null_ptr();
             }
 
             node
@@ -231,7 +238,7 @@ impl JumpRope {
     pub fn new() -> Self {
         JumpRope {
             num_bytes: 0,
-            // nexts: [SkipEntry::new(); MAX_HEIGHT],
+            // nexts: [SkipEntry::null_ptr(); MAX_HEIGHT],
 
             // We don't ever store characters in the head node, but the height
             // here is the maximum height of the entire rope.
@@ -241,7 +248,7 @@ impl JumpRope {
                 height: 1,
                 nexts: [],
             },
-            nexts: [SkipEntry::new(); MAX_HEIGHT+1],
+            nexts: [SkipEntry::null_ptr(); MAX_HEIGHT+1],
         }
     }
 
@@ -273,7 +280,7 @@ impl JumpRope {
         
         let mut offset = char_pos; // How many more chars to skip
 
-        let mut iter = RopeCursor([SkipEntry::new(); MAX_HEIGHT+1]);
+        let mut iter = RopeCursor([SkipEntry::null_ptr(); MAX_HEIGHT+1]);
 
         loop { // while height >= 0
             let en = unsafe { &*e };
@@ -486,6 +493,7 @@ impl JumpRope {
                 let s = (&*e).first_next();
                 if offset == s.skip_chars {
                     // End of current node. Skip to the start of the next one.
+                    // TODO: Possible bug here - we aren't updating the cursor. (Why doesn't this fail?)
                     e = s.node;
                     offset = 0;
                 }
@@ -720,7 +728,7 @@ impl JumpRope {
             assert!(skip_over.node.is_null());
 
             // The offsets store the total distance travelled since the start.
-            let mut iter = [SkipEntry::new(); MAX_HEIGHT];
+            let mut iter = [SkipEntry::null_ptr(); MAX_HEIGHT];
             for i in 0..self.head.height {
                 // Bleh.
                 iter[i as usize].node = &self.head as *const Node as *mut Node;
