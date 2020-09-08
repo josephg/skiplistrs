@@ -12,7 +12,7 @@
 /// fast; but it manages that through heavy use of unsafe pointers and C-style
 /// dynamic arrays.
 
-use std::{mem, ptr, str};
+use std::{mem, ptr};
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::min;
 
@@ -29,8 +29,6 @@ const NODE_NUM_ITEMS: usize = 100;
 const MAX_HEIGHT: usize = 20;
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
-
-
 
 /// This represents a single entry in either the nexts pointers list or in an
 /// iterator.
@@ -107,26 +105,28 @@ fn random_height() -> u8 {
 pub struct SkipList<T: Default + Copy, GetUserSize: Fn(&T) -> usize> {
     // TODO: Put this on the heap. For the use case here its almost certainly fine.
 
-    // The total number of items in the skip list. This is not used internally -
-    // just here for bookkeeping.
+    // TODO: For safety, pointers in to this structure should be Pin<> if we
+    // ever want to hold on to iterators.
+
+    /// The total number of items in the skip list. This is not used internally -
+    /// just here for bookkeeping.
     num_items: usize,
 
     get_usersize: GetUserSize,
 
-    // The first node is inline. The height is the max height we've ever used in
-    // the rope. For safety, this structure should be Pin<> if you ever hold on
-    // to iterators.
+    /// The first node is inline. The height is 1 more than the max height we've
+    /// ever used. The highest next entry points to {null, total usersize}.
     head: Node<T>,
 
-    // This is so dirty. The first node is embedded in SkipList; but we need to
-    // allocate enough room for height to get arbitrarily large. I could insist
-    // on SkipList always getting allocated on the heap, but for small lists
-    // its much better to be on the stack.
-    // So this struct is repr(C) and I'm just padding out the struct directly.
-    nexts: [SkipEntry<T>; MAX_HEIGHT+1],
-
-    // The nexts array contains an extra entry at [head.height-1] the which
-    // points past the skip list. The size is the size of the entire list.
+    /// This is so dirty. The first node is embedded in SkipList; but we need to
+    /// allocate enough room for height to get arbitrarily large. I could insist
+    /// on SkipList always getting allocated on the heap, but for small lists its
+    /// much better to be on the stack.
+    ///
+    /// So this struct is repr(C) and I'm just padding out the struct directly.
+    /// All accesses should go through head because otherwise I think we violate
+    /// aliasing rules.
+    _nexts_padding: [SkipEntry<T>; MAX_HEIGHT+1],
 }
 
 
@@ -287,10 +287,10 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             head: Node {
                 items: [T::default(); NODE_NUM_ITEMS],
                 num_items: 0,
-                height: 1,
+                height: 1, // Stores 1+ max height of list nodes
                 nexts: [],
             },
-            nexts: [SkipEntry::new_null(); MAX_HEIGHT+1],
+            _nexts_padding: [SkipEntry::new_null(); MAX_HEIGHT+1],
         }
     }
 
@@ -334,7 +334,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             assert!(self.head.height >= 1);
             assert!(self.head.height < MAX_HEIGHT_U8 + 1);
 
-            let skip_over = &self.nexts[self.head.height as usize - 1];
+            let skip_over = &self.head.nexts()[self.head.height as usize - 1];
             // println!("Skip over skip chars {}, num bytes {}", skip_over.skip_items, self.num_bytes);
             // assert!(skip_over.skip_items <= self.num_items as usize);
             assert!(skip_over.node.is_null());
@@ -445,14 +445,18 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
 
         let mut head_height = self.head.height as usize;
         let new_height_usize = new_height as usize;
-        while head_height <= new_height_usize {
-            // TODO: Why do we copy here? Explain it in a comment. This is
-            // currently lifted from the C code.
-            self.nexts[head_height] = self.nexts[head_height - 1];
-            iter.entries[head_height] = iter.entries[head_height - 1];
+        if head_height <= new_height_usize {
+            while head_height <= new_height_usize {
+                // The highest element in the head's nexts is 1 + the height of
+                // the max node we've ever had. It points past the end of the
+                // list.
+                let nexts = self.head.nexts_mut();
+                nexts[head_height] = nexts[head_height - 1];
+                iter.entries[head_height] = iter.entries[head_height - 1];
+            }
 
-            self.head.height += 1;
-            head_height += 1;
+            head_height = new_height_usize + 1;
+            self.head.height = head_height as u8;
         }
 
         for i in 0..new_height_usize {
