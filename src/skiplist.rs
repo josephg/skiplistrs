@@ -252,6 +252,7 @@ impl<'a, T: Default + Copy> Iterator for NodeIter<'a, T> {
 }
 
 // TODO: Add a phantom lifetime reference to the skip list root for safety.
+#[derive(Copy, Clone, Debug)]
 struct Cursor<T: Default + Copy> {
 
     entries: [SkipEntry<T>; MAX_HEIGHT+1]
@@ -271,6 +272,33 @@ impl<T: Default + Copy> Cursor<T> {
                 let skip = &mut (*self.entries[i].node).nexts_mut()[i].skip_usersize;
                 *skip = skip.wrapping_add(by as usize);
             }
+        }
+    }
+
+    /// Move a cursor to the start of the next node. Returns the new node (or a
+    /// nullptr if this is the end of the list).
+    fn advance_node(&mut self) -> *mut Node<T> {
+        unsafe {
+            let SkipEntry { node: e, skip_usersize: offset } = self.entries[0];
+            // offset tells us how far into the current element we are (in
+            // usersize). We need to increment the offsets by the entry's
+            // remaining length to get to the start of the next node.
+            let advance_by = (*e).get_userlen() - offset;
+            let next = (*e).get_next_ptr();
+            let height = (*e).height as usize;
+
+            for i in 0..height {
+                self.entries[i] = SkipEntry {
+                    node: next,
+                    skip_usersize: 0
+                };
+            }
+
+            for i in height..MAX_HEIGHT {
+                self.entries[i].skip_usersize -= advance_by;
+            }
+
+            next
         }
     }
 
@@ -305,8 +333,12 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     //     unsafe { self.head.nexts[0].next() }
     // }
 
+    fn get_top_entry(&self) -> SkipEntry<T> {
+        self.head.nexts()[self.head.height as usize - 1]
+    }
+
     pub fn get_userlen(&self) -> usize {
-        self.head.nexts()[self.head.height as usize - 1].skip_usersize
+        self.get_top_entry().skip_usersize
     }
 
     fn iter(&self) -> NodeIter<T> { NodeIter(Some(&self.head)) }
@@ -334,7 +366,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             assert!(self.head.height >= 1);
             assert!(self.head.height < MAX_HEIGHT_U8 + 1);
 
-            let skip_over = &self.head.nexts()[self.head.height as usize - 1];
+            let skip_over = self.get_top_entry();
             // println!("Skip over skip chars {}, num bytes {}", skip_over.skip_items, self.num_bytes);
             // assert!(skip_over.skip_items <= self.num_items as usize);
             assert!(skip_over.node.is_null());
@@ -402,7 +434,12 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         
         let mut offset = target_userpos; // How many more items to skip
 
-        let mut iter = Cursor { entries: [SkipEntry::new_null(); MAX_HEIGHT+1] };
+        // We're populating it like this so the cursor will remain valid even if
+        // new items (with a larger max height) are inserted.
+        let mut iter = Cursor { entries: [SkipEntry {
+            node: ptr::null_mut(),
+            skip_usersize: offset
+        }; MAX_HEIGHT+1] };
 
         loop { // while height >= 0
             let en = unsafe { &*e };
@@ -510,13 +547,14 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
                 if next.num_items as usize + num_inserted_items <= NODE_NUM_ITEMS {
                     // offset = 0; offset_bytes = 0;
                     item_idx = 0;
-                    for i in 0..next.height {
-                        // tree offset nodes aren't used here; but they might be referred to by the caller.
-                        iter.entries[i as usize] = SkipEntry {
-                            node: next,
-                            skip_usersize: 0
-                        };
-                    }
+                    // for i in 0..next.height {
+                    //     // tree offset nodes aren't used here; but they might be referred to by the caller.
+                    //     iter.entries[i as usize] = SkipEntry {
+                    //         node: next,
+                    //         skip_usersize: 0
+                    //     };
+                    // }
+                    iter.advance_node();
                     e = next;
 
                     insert_here = true;
@@ -617,9 +655,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
                 if item_idx == (*e).num_items as usize {
                     // let entry = (&*e).first_next_entry();
                     // End of current node. Skip to the start of the next one.
-                    // TODO: Possible bug here - we aren't updating the cursor. (Why doesn't this fail?)
-                    // e = entry.node;
-                    e = (*e).get_next_ptr();
+                    e = iter.advance_node();
                     if e.is_null() { panic!("Cannot delete past the end of the list"); }
                     item_idx = 0;
                     // offset = 0;
@@ -687,12 +723,72 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         }
     }
 
+    pub fn replace_at(&mut self, mut start_userpos: usize, mut removed_items: usize, mut inserted_content: &[T]) {
+        if removed_items == 0 && inserted_content.len() == 0 { return; }
+
+        start_userpos = min(start_userpos, self.get_userlen());
+
+        let mut cursor = self.iter_at_userpos(start_userpos);
+        let (mut index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, false);
+        assert_eq!(offset, 0, "Splitting nodes not yet supported");
+
+        // Replace as many items from removed_items as we can with inserted_content.
+        unsafe {
+            let mut replaced_items = min(removed_items, inserted_content.len());
+            removed_items -= replaced_items;
+
+            while replaced_items > 0 {
+                let mut e = cursor.here_ptr();
+                if index == (*e).num_items as usize {
+                    // Move to the next item.
+                    e = cursor.advance_node();
+                    if e.is_null() { panic!("Cannot replace past the end of the list"); }
+                    index = 0;
+                }
+
+                let e_num_items = (*e).num_items as usize;
+                let replaced_items_here = min(replaced_items, e_num_items - index);
+
+                let old_items = &mut (*e).items[index..index + replaced_items_here];
+                let new_items = &inserted_content[0..replaced_items_here];
+
+                // Replace the items themselves.
+                old_items.copy_from_slice(new_items);
+
+                // And bookkeeping. Bookkeeping forever.
+                let usersize_delta = self.userlen_of_slice(new_items) as isize
+                    - self.userlen_of_slice(old_items) as isize;
+                if usersize_delta != 0 {
+                    cursor.update_offsets(self.head.height as usize, usersize_delta)
+                }
+
+                inserted_content = &inserted_content[replaced_items_here..];
+                replaced_items -= replaced_items_here;
+                // We'll hop to the next Node at the start of the next loop
+                // iteration if needed.
+                index += replaced_items_here;
+            }
+
+            // Ok now one of two things must be true. Either we've run out of
+            // items to remove, or we've run out of items to insert.
+            if removed_items == 0 {
+                // Insert!
+                self.insert_at_iter(&mut cursor, index, inserted_content);
+            } else {
+                debug_assert!(inserted_content.len() == 0);
+                self.del_at_iter(&mut cursor, index, removed_items);
+            }
+        }
+
+        // unsafe { self.insert_at_iter(&mut cursor, index, contents); }
+    }
+
     pub fn insert_at(&mut self, mut userpos: usize, contents: &[T]) {
         if contents.len() == 0 { return; }
         
         userpos = min(userpos, self.get_userlen());
         let mut cursor = self.iter_at_userpos(userpos);
-        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, true);
+        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, false);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
         unsafe { self.insert_at_iter(&mut cursor, index, contents); }
     }

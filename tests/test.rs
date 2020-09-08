@@ -17,12 +17,16 @@ mod test {
     #[test]
     fn blah() {
         let mut list = SkipList::new(item_size_one);
-        let new_content: [u8; 3] = [1,2,3];
+        let new_content: [u8; 4] = [1,2,3,4];
         list.insert_at(0, &new_content[..]);
         list.print();
         list.check();
         
-        list.del_at(1, 2);
+        list.del_at(1, 2); // Delete 2, 3. List is now 1, 4.
+        list.print();
+        list.check();
+
+        list.replace_at(1, 1, &new_content[..]); // List should now be 1, 1, 2, 3, 4.
         list.print();
         list.check();
     }
