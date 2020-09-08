@@ -5,7 +5,7 @@
 mod test {
 
     extern crate skiplistrs;
-    use self::skiplistrs::SkipList;
+    use self::skiplistrs::*;
 
     extern crate rand;
     use self::rand::Rng;
@@ -14,12 +14,20 @@ mod test {
 
     use std::fmt::Debug;
 
-    fn check<'a, T: Default + Copy + PartialEq + Debug, F: Fn(&T) -> usize>(list: &SkipList<T, F>, expected: &'a [T]) {
+    struct TestConfig;
+    impl ListConfig for TestConfig {
+        type Item = u8;
+        fn get_usersize(_item: &Self::Item) -> usize { 1 }
+    }
+
+    fn check<'a, C: ListConfig>(list: &SkipList<C>, expected: &'a [C::Item])
+        where C::Item: PartialEq + Debug
+    {
         list.check();
         // r.print();
         assert!(list.eq_list(expected));
         
-        let vec: Vec<T> = list.into();
+        let vec: Vec<C::Item> = list.into();
         assert_eq!(vec, expected);
         assert_eq!(list.len_items(), expected.len());
 
@@ -41,12 +49,12 @@ mod test {
     #[test]
     fn sanity() {
         // Lets start by making sure the eq_list() method works right.
-        let list = SkipList::new(item_size_one);
+        let list = SkipList::<TestConfig>::new();
         assert!(list.eq_list(&[]));
         assert!(!list.eq_list(&[1]));
         check(&list, &[]);
         
-        let list = SkipList::new_from_slice(item_size_one, &[1,2,3,4]);
+        let list = SkipList::<TestConfig>::new_from_slice(&[1,2,3,4]);
         assert!(list.eq_list(&[1,2,3,4]));
         assert!(!list.eq_list(&[1,2,3,5]));
         assert!(!list.eq_list(&[1,2,3]));
@@ -55,7 +63,7 @@ mod test {
 
     #[test]
     fn simple_edits() {
-        let mut list = SkipList::new_from_slice(item_size_one, &[1,2,3,4]);
+        let mut list = SkipList::<TestConfig>::new_from_slice(&[1,2,3,4]);
         check(&list, &[1,2,3,4]);
         
         list.del_at(1, 2); // Delete 2,3.

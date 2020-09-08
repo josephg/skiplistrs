@@ -30,16 +30,35 @@ const MAX_HEIGHT: usize = 20;
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
+/// The whole list is configured through a single generic trait parameter
+pub trait ListConfig {
+    type Item: Default + Copy;
+
+    fn get_usersize(item: &Self::Item) -> usize;
+
+    fn userlen_of_slice(items: &[Self::Item]) -> usize {
+        items.iter().fold(0, |acc, item| {
+            acc + Self::get_usersize(item)
+        })
+    }
+}
+
 /// This represents a single entry in either the nexts pointers list or in an
 /// iterator.
-#[derive(Copy, Clone, Debug)]
-struct SkipEntry<T: Default + Copy> {
+#[derive(Debug)]
+struct SkipEntry<C: ListConfig> {
     /// The node being pointed to.
-    node: *mut Node<T>,
+    node: *mut Node<C>,
     /// The number of *items* between the start of the current node and the
     /// start of the next node. That means nexts entry 0 contains the length of
     /// the current node.
     skip_usersize: usize,
+}
+
+// Needed due to rust bug: https://github.com/rust-lang/rust/issues/26925
+impl<C: ListConfig> Copy for SkipEntry<C> {}
+impl<C: ListConfig> Clone for SkipEntry<C> {
+    fn clone(&self) -> Self { *self }
 }
 
 // The node structure is designed in a very fancy way which would be more at
@@ -59,13 +78,13 @@ struct SkipEntry<T: Default + Copy> {
 // struct itself would be a fixed size; but I'm not sure if it would be better.
 
 #[repr(C)] // Prevent parameter reordering.
-struct Node<T: Default + Copy> {
+struct Node<C: ListConfig> {
     /// We start with the items themselves. The number of items in use is in
     /// nexts[0].skip_items. This is initialized with Default::default() for the
     /// type. When MaybeUninit completely lands, it will be possible to make
     /// this a tiny bit faster using that instead; and just leave junk in the
     /// array to start.
-    items: [T; NODE_NUM_ITEMS],
+    items: [C::Item; NODE_NUM_ITEMS],
 
     // Number of items in `items` in use / filled.
     num_items: u8,
@@ -79,15 +98,20 @@ struct Node<T: Default + Copy> {
     // declare it as [SkipEntry; 0], but I haven't done that because we always
     // have at least a height of 1 anyway, and this makes it a bit cheaper to
     // look at the first skipentry item.
-    nexts: [SkipEntry<T>; 0],
+    nexts: [SkipEntry<C>; 0],
 }
 
 // Make sure nexts uses correct alignment. This should be guaranteed by repr(C)
 // This test will fail if this ever stops being true.
 #[test]
 fn test_align() {
-    #[repr(C)] struct Check([SkipEntry<u8>; 0]);
-    assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry<u8>>());
+    struct TestConfig;
+    impl ListConfig for TestConfig {
+        type Item = u8;
+        fn get_usersize(_item: &Self::Item) -> usize { 1 }
+    }
+    #[repr(C)] struct Check([SkipEntry<TestConfig>; 0]);
+    assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry<TestConfig>>());
     // TODO: It'd be good to also check the alignment of the nexts field in Node.
 }
 
@@ -102,7 +126,7 @@ fn random_height() -> u8 {
 }
 
 #[repr(C)]
-pub struct SkipList<T: Default + Copy, GetUserSize: Fn(&T) -> usize> {
+pub struct SkipList<C: ListConfig> {
     // TODO: Put this on the heap. For the use case here its almost certainly fine.
 
     // TODO: For safety, pointers in to this structure should be Pin<> if we
@@ -112,11 +136,11 @@ pub struct SkipList<T: Default + Copy, GetUserSize: Fn(&T) -> usize> {
     /// just here for bookkeeping.
     num_items: usize,
 
-    get_usersize: GetUserSize,
+    // get_usersize: GetUserSize,
 
     /// The first node is inline. The height is 1 more than the max height we've
     /// ever used. The highest next entry points to {null, total usersize}.
-    head: Node<T>,
+    head: Node<C>,
 
     /// This is so dirty. The first node is embedded in SkipList; but we need to
     /// allocate enough room for height to get arbitrarily large. I could insist
@@ -126,26 +150,26 @@ pub struct SkipList<T: Default + Copy, GetUserSize: Fn(&T) -> usize> {
     /// So this struct is repr(C) and I'm just padding out the struct directly.
     /// All accesses should go through head because otherwise I think we violate
     /// aliasing rules.
-    _nexts_padding: [SkipEntry<T>; MAX_HEIGHT+1],
+    _nexts_padding: [SkipEntry<C>; MAX_HEIGHT+1],
 }
 
 
-impl<T: Default + Copy> SkipEntry<T> {
+impl<C: ListConfig> SkipEntry<C> {
     fn new_null() -> Self {
         SkipEntry { node: ptr::null_mut(), skip_usersize: 0 }
     }
 }
 
-impl<T: Default + Copy> Node<T> {
+impl<C: ListConfig> Node<C> {
     // Do I need to be explicit about the lifetime of the references being tied
     // to the lifetime of the node?
-    fn nexts(&self) -> &[SkipEntry<T>] {
+    fn nexts(&self) -> &[SkipEntry<C>] {
         unsafe {
             std::slice::from_raw_parts(self.nexts.as_ptr(), self.height as usize)
         }
     }
 
-    fn nexts_mut(&mut self) -> &mut [SkipEntry<T>] {
+    fn nexts_mut(&mut self) -> &mut [SkipEntry<C>] {
         unsafe {
             std::slice::from_raw_parts_mut(self.nexts.as_mut_ptr(), self.height as usize)
         }
@@ -153,18 +177,18 @@ impl<T: Default + Copy> Node<T> {
 
     fn layout_with_height(height: u8) -> Layout {
         Layout::from_size_align(
-            mem::size_of::<Node<T>>() + mem::size_of::<SkipEntry<T>>() * (height as usize),
-            mem::align_of::<Node<T>>()).unwrap()
+            mem::size_of::<Node<C>>() + mem::size_of::<SkipEntry<C>>() * (height as usize),
+            mem::align_of::<Node<C>>()).unwrap()
     }
 
-    fn alloc_with_height(height: u8) -> *mut Node<T> {
+    fn alloc_with_height(height: u8) -> *mut Node<C> {
         //println!("height {} {}", height, max_height());
         assert!(height >= 1 && height <= MAX_HEIGHT_U8);
 
         unsafe {
-            let node = alloc(Self::layout_with_height(height)) as *mut Node<T>;
+            let node = alloc(Self::layout_with_height(height)) as *mut Node<C>;
             (*node) = Node {
-                items: [T::default(); NODE_NUM_ITEMS],
+                items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
                 height: height,
                 nexts: [],
@@ -178,24 +202,24 @@ impl<T: Default + Copy> Node<T> {
         }
     }
 
-    fn alloc() -> *mut Node<T> {
+    fn alloc() -> *mut Node<C> {
         Self::alloc_with_height(random_height())
     }
 
-    unsafe fn free(p: *mut Node<T>) {
+    unsafe fn free(p: *mut Node<C>) {
         dealloc(p as *mut u8, Self::layout_with_height((*p).height));
     }
 
-    fn content_slice(&self) -> &[T] {
+    fn content_slice(&self) -> &[C::Item] {
         &self.items[..self.num_items as usize]
     }
 
     // The height is at least 1, so this is always valid.
-    fn first_next_entry<'a>(&self) -> &'a SkipEntry<T> {
+    fn first_next_entry<'a>(&self) -> &'a SkipEntry<C> {
         unsafe { &*self.nexts.as_ptr() }
     }
 
-    fn first_next_mut<'a>(&mut self) -> &'a mut SkipEntry<T> {
+    fn first_next_mut<'a>(&mut self) -> &'a mut SkipEntry<C> {
         unsafe { &mut *self.nexts.as_mut_ptr() }
     }
 
@@ -204,7 +228,7 @@ impl<T: Default + Copy> Node<T> {
         self.first_next_entry().skip_usersize
     }
     
-    fn get_next_ptr(&self) -> *mut Node<T> {
+    fn get_next_ptr(&self) -> *mut Node<C> {
         self.first_next_entry().node
     }
 
@@ -215,11 +239,11 @@ impl<T: Default + Copy> Node<T> {
     /// If the offset lands between items, we could return either the previous or next item.
     /// 
     /// Returns (index, item_offset).
-    fn get_iter_idx<F: Fn(&T) -> usize>(&self, mut usersize_offset: usize, get_usersize: F, stick_end: bool) -> (usize, usize) {
+    fn get_iter_idx(&self, mut usersize_offset: usize, stick_end: bool) -> (usize, usize) {
         if usersize_offset == 0 { return (0, 0); }
 
         for (i, item) in self.content_slice().iter().enumerate() {
-            let usersize = get_usersize(item);
+            let usersize = C::get_usersize(item);
             if usersize > usersize_offset {
                 return (i, usersize_offset);
             } else if usersize == usersize_offset {
@@ -238,11 +262,11 @@ impl<T: Default + Copy> Node<T> {
     // }
 }
 
-struct NodeIter<'a, T: Default + Copy>(Option<&'a Node<T>>);
-impl<'a, T: Default + Copy> Iterator for NodeIter<'a, T> {
-    type Item = &'a Node<T>;
+struct NodeIter<'a, C: ListConfig>(Option<&'a Node<C>>);
+impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
+    type Item = &'a Node<C>;
 
-    fn next(&mut self) -> Option<&'a Node<T>> {
+    fn next(&mut self) -> Option<&'a Node<C>> {
         let prev = self.0;
         if let Some(n) = self.0 {
             *self = NodeIter(unsafe { n.first_next_entry().node.as_ref() });
@@ -253,15 +277,15 @@ impl<'a, T: Default + Copy> Iterator for NodeIter<'a, T> {
 
 // TODO: Add a phantom lifetime reference to the skip list root for safety.
 #[derive(Copy, Clone, Debug)]
-struct Cursor<T: Default + Copy> {
+struct Cursor<C: ListConfig> {
 
-    entries: [SkipEntry<T>; MAX_HEIGHT+1]
+    entries: [SkipEntry<C>; MAX_HEIGHT+1]
 
     // / The offset into the pointed item
     // item_offset: usize,
 }
 
-impl<T: Default + Copy> Cursor<T> {
+impl<C: ListConfig> Cursor<C> {
     fn update_offsets(&mut self, height: usize, by: isize) {
         for i in 0..height {
             unsafe {
@@ -277,7 +301,7 @@ impl<T: Default + Copy> Cursor<T> {
 
     /// Move a cursor to the start of the next node. Returns the new node (or a
     /// nullptr if this is the end of the list).
-    fn advance_node(&mut self) -> *mut Node<T> {
+    fn advance_node(&mut self) -> *mut Node<C> {
         unsafe {
             let SkipEntry { node: e, skip_usersize: offset } = self.entries[0];
             // offset tells us how far into the current element we are (in
@@ -302,18 +326,18 @@ impl<T: Default + Copy> Cursor<T> {
         }
     }
 
-    fn here_ptr(&self) -> *mut Node<T> {
+    fn here_ptr(&self) -> *mut Node<C> {
         self.entries[0].node
     }
 }
 
-impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize: Fn(&T) -> usize {
-    pub fn new(get_usersize: GetUserSize) -> Self {
-        SkipList::<T, GetUserSize> {
+impl<C: ListConfig> SkipList<C> {
+    pub fn new() -> Self {
+        SkipList::<C> {
             num_items: 0,
-            get_usersize: get_usersize,
+            // get_usersize: get_usersize,
             head: Node {
-                items: [T::default(); NODE_NUM_ITEMS],
+                items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
                 height: 1, // Stores 1+ max height of list nodes
                 nexts: [],
@@ -323,8 +347,8 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     }
 
     // TODO: Add From trait.
-    pub fn new_from_slice(get_usersize: GetUserSize, s: &[T]) -> Self {
-        let mut rope = Self::new(get_usersize);
+    pub fn new_from_slice(s: &[C::Item]) -> Self {
+        let mut rope = Self::new();
         rope.insert_at(0, s);
         rope
     }
@@ -333,7 +357,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     //     unsafe { self.head.nexts[0].next() }
     // }
 
-    fn get_top_entry(&self) -> SkipEntry<T> {
+    fn get_top_entry(&self) -> SkipEntry<C> {
         self.head.nexts()[self.head.height as usize - 1]
     }
 
@@ -341,13 +365,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         self.get_top_entry().skip_usersize
     }
 
-    fn iter(&self) -> NodeIter<T> { NodeIter(Some(&self.head)) }
-
-    pub(crate) fn userlen_of_slice(&self, items: &[T]) -> usize {
-        items.iter().fold(0, |acc, item| {
-            acc + (self.get_usersize)(item)
-        })
-    }
+    fn iter(&self) -> NodeIter<C> { NodeIter(Some(&self.head)) }
     
     pub fn len_items(&self) -> usize {
         self.num_items as usize
@@ -379,7 +397,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             let mut iter = [SkipEntry::new_null(); MAX_HEIGHT];
             for i in 0..self.head.height {
                 // Bleh.
-                iter[i as usize].node = &self.head as *const Node<T> as *mut Node<T>;
+                iter[i as usize].node = &self.head as *const Node<C> as *mut Node<C>;
             }
 
             let mut num_items = 0;
@@ -387,17 +405,17 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
 
             for n in self.iter() {
                 // println!("visiting {:?}", n.as_str());
-                assert!((n as *const Node<T> == &self.head as *const Node<T>) || n.num_items > 0);
+                assert!((n as *const Node<C> == &self.head as *const Node<C>) || n.num_items > 0);
                 assert!(n.height <= MAX_HEIGHT_U8);
                 assert!(n.num_items as usize <= NODE_NUM_ITEMS);
 
                 // Make sure the number of items matches the count
-                let local_count = self.userlen_of_slice(&n.items[0..n.num_items as usize]);
+                let local_count = C::userlen_of_slice(&n.items[0..n.num_items as usize]);
                 assert_eq!(local_count, n.get_userlen());
 
                 // assert_eq!(n.as_str().chars().count(), n.num_chars());
                 for (i, entry) in iter[0..n.height as usize].iter_mut().enumerate() {
-                    assert_eq!(entry.node as *const Node<T>, n as *const Node<T>);
+                    assert_eq!(entry.node as *const Node<C>, n as *const Node<C>);
                     assert_eq!(entry.skip_usersize, num_usercount);
 
                     // println!("replacing entry {:?} with {:?}", entry, n.nexts()[i].node);
@@ -430,10 +448,10 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     /// Note this does not calculate the index and offset in the current node.
     ///
     /// TODO: This should be Pin<&self>.
-    fn iter_at_userpos(&self, target_userpos: usize) -> Cursor<T> {
+    fn iter_at_userpos(&self, target_userpos: usize) -> Cursor<C> {
         assert!(target_userpos <= self.get_userlen());
 
-        let mut e: *const Node<T> = &self.head;
+        let mut e: *const Node<C> = &self.head;
         let mut height = self.head.height as usize - 1;
         
         let mut offset = target_userpos; // How many more items to skip
@@ -459,7 +477,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
                 // Record this and go down.
                 iter.entries[height] = SkipEntry {
                     skip_usersize: offset,
-                    node: e as *mut Node<T>, // This is pretty gross
+                    node: e as *mut Node<C>, // This is pretty gross
                 };
 
                 if height == 0 { break; } else { height -= 1; }
@@ -474,9 +492,9 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     // the specified content. The passed cursor should point at the end of the
     // previous node. It will be updated to point to the end of the newly
     // inserted content.
-    unsafe fn insert_node_at(&mut self, iter: &mut Cursor<T>, contents: &[T], new_userlen: usize) {
+    unsafe fn insert_node_at(&mut self, iter: &mut Cursor<C>, contents: &[C::Item], new_userlen: usize) {
         // println!("Insert_node_at {} len {}", contents.len(), self.num_bytes);
-        debug_assert_eq!(new_userlen, self.userlen_of_slice(contents));
+        debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
         assert!(contents.len() < NODE_NUM_ITEMS);
 
         let new_node = Node::alloc();
@@ -523,7 +541,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         self.num_items += contents.len();
     }
 
-    unsafe fn insert_at_iter(&mut self, iter: &mut Cursor<T>, mut item_idx: usize, contents: &[T]) {
+    unsafe fn insert_at_iter(&mut self, iter: &mut Cursor<C>, mut item_idx: usize, contents: &[C::Item]) {
         // iter specifies where to insert.
 
         let mut e = iter.here_ptr();
@@ -535,7 +553,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         // We might be able to insert the new data into the current node, depending on
         // how big it is.
         let num_inserted_items = contents.len();
-        let num_inserted_usercount = self.userlen_of_slice(contents);
+        let num_inserted_usercount = C::userlen_of_slice(contents);
 
         // Can we insert into the current node?
         let mut insert_here = (*e).num_items as usize + num_inserted_items <= NODE_NUM_ITEMS;
@@ -633,7 +651,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             // added.
             
             for chunk in contents.chunks_exact(NODE_NUM_ITEMS) {
-                let userlen = self.userlen_of_slice(chunk);
+                let userlen = C::userlen_of_slice(chunk);
                 self.insert_node_at(iter, chunk, userlen);
             }
 
@@ -648,7 +666,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     /// Interestingly unlike the original, here we only care about specifying
     /// the number of removed items by counting them. We do not use usersize
     /// in the deleted item count.
-    unsafe fn del_at_iter(&mut self, iter: &mut Cursor<T>, mut item_idx: usize, mut num_deleted_items: usize) {
+    unsafe fn del_at_iter(&mut self, iter: &mut Cursor<C>, mut item_idx: usize, mut num_deleted_items: usize) {
         if num_deleted_items == 0 { return; }
 
         // let mut offset = iter.entries[0].skip_usersize;
@@ -676,7 +694,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
             let height = (*e).height as usize;
             let removed_userlen;
 
-            if removed_here < e_num_items || e as *const Node<T> == &self.head as *const Node<T> {
+            if removed_here < e_num_items || e as *const Node<C> == &self.head as *const Node<C> {
                 // Just trim the node down.
                 // let s = (*e).as_str();
                 // let leading_bytes = str_get_byte_offset(s, offset);
@@ -685,7 +703,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
                 let trailing_items = e_num_items - item_idx - removed_here;
                 
                 let c = &mut (*e).items;
-                removed_userlen = self.userlen_of_slice(&c[item_idx..item_idx + removed_here]);
+                removed_userlen = C::userlen_of_slice(&c[item_idx..item_idx + removed_here]);
                 if trailing_items > 0 {
                     c[..].copy_within(item_idx + removed_here..e_num_items, item_idx);
                     // ptr::copy(
@@ -727,13 +745,13 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         }
     }
 
-    pub fn replace_at(&mut self, mut start_userpos: usize, mut removed_items: usize, mut inserted_content: &[T]) {
+    pub fn replace_at(&mut self, mut start_userpos: usize, mut removed_items: usize, mut inserted_content: &[C::Item]) {
         if removed_items == 0 && inserted_content.len() == 0 { return; }
 
         start_userpos = min(start_userpos, self.get_userlen());
 
         let mut cursor = self.iter_at_userpos(start_userpos);
-        let (mut index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, false);
+        let (mut index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
         // Replace as many items from removed_items as we can with inserted_content.
@@ -760,8 +778,8 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
                 old_items.copy_from_slice(new_items);
 
                 // And bookkeeping. Bookkeeping forever.
-                let usersize_delta = self.userlen_of_slice(new_items) as isize
-                    - self.userlen_of_slice(old_items) as isize;
+                let usersize_delta = C::userlen_of_slice(new_items) as isize
+                    - C::userlen_of_slice(old_items) as isize;
                 if usersize_delta != 0 {
                     cursor.update_offsets(self.head.height as usize, usersize_delta)
                 }
@@ -787,12 +805,12 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         // unsafe { self.insert_at_iter(&mut cursor, index, contents); }
     }
 
-    pub fn insert_at(&mut self, mut userpos: usize, contents: &[T]) {
+    pub fn insert_at(&mut self, mut userpos: usize, contents: &[C::Item]) {
         if contents.len() == 0 { return; }
         
         userpos = min(userpos, self.get_userlen());
         let mut cursor = self.iter_at_userpos(userpos);
-        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, false);
+        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
         unsafe { self.insert_at_iter(&mut cursor, index, contents); }
     }
@@ -804,7 +822,7 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
         if num_items == 0 { return; }
 
         let mut cursor = self.iter_at_userpos(userpos);
-        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, &self.get_usersize, false);
+        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
         unsafe { self.del_at_iter(&mut cursor, index, num_items); }
@@ -812,8 +830,8 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
 }
 
 
-impl<T: Default + Copy + PartialEq, F: Fn(&T) -> usize> SkipList<T, F> {
-    pub fn eq_list(&self, other: &[T]) -> bool {
+impl<C: ListConfig> SkipList<C> where C::Item: PartialEq {
+    pub fn eq_list(&self, other: &[C::Item]) -> bool {
         let mut pos = 0;
         let other_len = other.len();
 
@@ -831,7 +849,7 @@ impl<T: Default + Copy + PartialEq, F: Fn(&T) -> usize> SkipList<T, F> {
     }
 }
 
-impl<T: Default + Copy, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
+impl<C: ListConfig> Drop for SkipList<C> {
 // impl<T, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
     fn drop(&mut self) {
         let mut node = self.head.first_next_entry().node;
@@ -899,22 +917,20 @@ impl<T: Default + Copy, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
 // }
 // impl<T: Default + Copy, F: Fn(&T) -> usize> Eq for SkipList<T, F> {}
 
+impl<C: ListConfig> From<&[C::Item]> for SkipList<C> {
+    fn from(s: &[C::Item]) -> SkipList<C> {
+        SkipList::new_from_slice(s)
+    }
+}
 
-// impl<T: Default + Copy, F: Fn(&T) -> usize> From<&[T]> for SkipList<T, F> {
-//     fn from(s: &[T]) -> SkipList {
-//         SkipList::new_from_str(s)
-//     }
-// }
+impl<C: ListConfig> From<Vec<C::Item>> for SkipList<C> {
+    fn from(s: Vec<C::Item>) -> SkipList<C> {
+        SkipList::new_from_slice(s.as_slice())
+    }
+}
 
-// impl<T: Default + Copy, F: Fn(&T) -> usize> From<Vec<T>> for SkipList<T, F> {
-//     fn from(s: Vec<T>) -> SkipList {
-//         SkipList::new_from_str(s.as_str())
-//     }
-// }
-
-// impl<'a, T> Into<Vec<T>> for &'a SkipList {
-impl<T: Default + Copy, F: Fn(&T) -> usize> Into<Vec<T>> for &SkipList<T, F> {
-    fn into(self) -> Vec<T> {
+impl<C: ListConfig> Into<Vec<C::Item>> for &SkipList<C> {
+    fn into(self) -> Vec<C::Item> {
         let mut content = Vec::with_capacity(self.num_items);
 
         for node in self.iter() {
@@ -971,7 +987,7 @@ impl<T: Default + Copy, F: Fn(&T) -> usize> Into<Vec<T>> for &SkipList<T, F> {
 //     }
 // }
 
-impl<T: Default + Copy + std::fmt::Debug, F: Fn(&T) -> usize> SkipList<T, F> {
+impl<C: ListConfig> SkipList<C> where C::Item: std::fmt::Debug {
     // TODO: Don't export this.
     pub fn print(&self) {
         println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.get_userlen(), self.head.height);
