@@ -12,74 +12,68 @@ mod test {
 
     use std::cmp::min;
 
+    use std::fmt::Debug;
+
+    fn check<'a, T: Default + Copy + PartialEq + Debug, F: Fn(&T) -> usize>(list: &SkipList<T, F>, expected: &'a [T]) {
+        list.check();
+        // r.print();
+        assert!(list.eq_list(expected));
+        
+        let vec: Vec<T> = list.into();
+        assert_eq!(vec, expected);
+        assert_eq!(list.len_items(), expected.len());
+
+        // list.userlen_of_slice(expected);
+        // expected.iter().fold(0, |acc, item| {
+        //     acc + (self.get_usersize)(item)
+        // })
+        // assert_eq!(r.char_len(), expected.chars().count());
+        // assert!(*r == SkipList::from(expected), "Rope comparison fails");
+
+        // let clone = r.clone();
+        // // clone.print();
+        // clone.check();
+        // assert!(*r == clone, "Rope does not equal its clone");
+    }
+
     fn item_size_one(_x: &u8) -> usize { 1 }
 
     #[test]
-    fn blah() {
-        let mut list = SkipList::new(item_size_one);
-        let new_content: [u8; 4] = [1,2,3,4];
-        list.insert_at(0, &new_content[..]);
-        list.print();
-        list.check();
+    fn sanity() {
+        // Lets start by making sure the eq_list() method works right.
+        let list = SkipList::new(item_size_one);
+        assert!(list.eq_list(&[]));
+        assert!(!list.eq_list(&[1]));
+        check(&list, &[]);
         
-        list.del_at(1, 2); // Delete 2, 3. List is now 1, 4.
-        list.print();
-        list.check();
-
-        list.replace_at(1, 1, &new_content[..]); // List should now be 1, 1, 2, 3, 4.
-        list.print();
-        list.check();
+        let list = SkipList::new_from_slice(item_size_one, &[1,2,3,4]);
+        assert!(list.eq_list(&[1,2,3,4]));
+        assert!(!list.eq_list(&[1,2,3,5]));
+        assert!(!list.eq_list(&[1,2,3]));
+        check(&list, &[1,2,3,4]);
     }
 
-    // const UCHARS: [char; 23] = [
-    //   'a', 'b', 'c', '1', '2', '3', ' ', '\n', // ASCII
-    //   '©', '¥', '½', // The Latin-1 suppliment (U+80 - U+ff)
-    //   'Ύ', 'Δ', 'δ', 'Ϡ', // Greek (U+0370 - U+03FF)
-    //   '←', '↯', '↻', '⇈', // Arrows (U+2190 – U+21FF)
-    //   '𐆐', '𐆔', '𐆘', '𐆚', // Ancient roman symbols (U+10190 – U+101CF)
-    // ];
-
-    // fn random_unicode_string(len: usize) -> String {
-    //     let mut s = String::new();
-    //     let mut rng = rand::thread_rng();
-    //     for _ in 0..len {
-    //         s.push(CHARS[rng.gen_range(0, UCHARS.len())] as char);
-    //     }
-    //     s
-    // }
-
-    // const CHARS: &[u8; 83] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?,./";
-
-    // // Gross. Find a way to reuse the code from random_unicode_string.
-    // fn random_ascii_string(len: usize) -> String {
-    //     let mut s = String::new();
-    //     let mut rng = rand::thread_rng();
-    //     for _ in 0..len {
-    //         s.push(CHARS[rng.gen_range(0, CHARS.len())] as char);
-    //     }
-    //     s
-    // }
-
-    // fn check<'a>(r: &SkipList, expected: &'a str) {
-    //     r.check();
-    //     // r.print();
-    //     assert_eq!(r.to_string(), expected);
-    //     assert_eq!(r.len(), expected.len());
-    //     assert_eq!(r.char_len(), expected.chars().count());
-    //     assert!(*r == SkipList::from(expected), "Rope comparison fails");
-
-    //     let clone = r.clone();
-    //     // clone.print();
-    //     clone.check();
-    //     assert!(*r == clone, "Rope does not equal its clone");
-    // }
+    #[test]
+    fn simple_edits() {
+        let mut list = SkipList::new_from_slice(item_size_one, &[1,2,3,4]);
+        check(&list, &[1,2,3,4]);
+        
+        list.del_at(1, 2); // Delete 2,3.
+        check(&list, &[1,4]);
+        // list.print();
+        
+        list.replace_at(1, 1, &[5,6,7]); // List should now be 1, 1, 2, 3, 4.
+        check(&list, &[1,5,6,7]);
+        // list.print();
+    }
+    
 
     // #[test]
-    // fn empty_rope_has_no_contents() {
-    //     let mut r = SkipList::new();
+    // fn empty_list_has_no_contents() {
+    //     let mut r = SkipList::new(item_size_one(_x: &u8));
     //     check(&r, "");
 
-    //     r.insert_at(0, "");
+    //     r.insert_at(0, &[]);
     //     check(&r, "");
     // }
 
@@ -204,6 +198,7 @@ mod test {
 
     //     s.drain(byte_range);
     // }
+
 
 
     // #[test]

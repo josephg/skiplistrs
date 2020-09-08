@@ -343,10 +343,14 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
 
     fn iter(&self) -> NodeIter<T> { NodeIter(Some(&self.head)) }
 
-    fn userlen_of_slice(&self, items: &[T]) -> usize {
+    pub(crate) fn userlen_of_slice(&self, items: &[T]) -> usize {
         items.iter().fold(0, |acc, item| {
             acc + (self.get_usersize)(item)
         })
+    }
+    
+    pub fn len_items(&self) -> usize {
+        self.num_items as usize
     }
 
     // fn new() -> Self {
@@ -807,6 +811,26 @@ impl<T: Default + Copy, GetUserSize> SkipList<T, GetUserSize> where GetUserSize:
     }
 }
 
+
+impl<T: Default + Copy + PartialEq, F: Fn(&T) -> usize> SkipList<T, F> {
+    pub fn eq_list(&self, other: &[T]) -> bool {
+        let mut pos = 0;
+        let other_len = other.len();
+
+        for node in self.iter() {
+            let my_data = node.content_slice();
+            let my_len = my_data.len();
+
+            if pos + my_len > other_len || my_data != &other[pos..pos + my_data.len()] {
+                return false
+            }
+            pos += my_data.len();
+        }
+
+        return pos == other_len;
+    }
+}
+
 impl<T: Default + Copy, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
 // impl<T, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
     fn drop(&mut self) {
@@ -889,16 +913,17 @@ impl<T: Default + Copy, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
 // }
 
 // impl<'a, T> Into<Vec<T>> for &'a SkipList {
-//     fn into(self) -> String {
-//         let mut content = String::with_capacity(self.num_items);
+impl<T: Default + Copy, F: Fn(&T) -> usize> Into<Vec<T>> for &SkipList<T, F> {
+    fn into(self) -> Vec<T> {
+        let mut content = Vec::with_capacity(self.num_items);
 
-//         for node in self.iter() {
-//             content.push_str(node.as_str());
-//         }
+        for node in self.iter() {
+            content.extend(node.content_slice().iter());
+        }
 
-//         content
-//     }
-// }
+        content
+    }
+}
 
 // impl<T: Default + Copy, F> Clone for SkipList<T, F> where F: Fn(&T) -> usize {
 //     fn clone(&self) -> Self {
