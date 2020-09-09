@@ -20,8 +20,7 @@ use rand::{RngCore, Rng, SeedableRng};
 use rand::rngs::SmallRng;
 
 /// The likelyhood a node will have height (n+1) instead of n
-// const BIAS: f64 = 0.4; // this is way more accuracy than we need.
-const BIAS: u8 = 100; // likelihood out of 256.
+const BIAS: u8 = 100; // out of 256.
 
 /// The number of items in each node. Must fit in a u8 thanks to Node.
 // const NODE_NUM_ITEMS: usize = 100;
@@ -32,7 +31,6 @@ const NODE_NUM_ITEMS: usize = 100;
 /// side, cursors grow linearly with this number; so smaller is marginally
 /// better when the contents are smaller.
 const MAX_HEIGHT: usize = 20;
-// const MAX_HEIGHT: usize = env!("MAX_HEIGHT").parse::<usize>().unwrap();
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
@@ -66,56 +64,63 @@ pub trait ListConfig {
 struct SkipEntry<C: ListConfig> {
     /// The node being pointed to.
     node: *mut Node<C>,
+
     /// The number of *items* between the start of the current node and the
     /// start of the next node. That means nexts entry 0 contains the length of
     /// the current node.
     skip_usersize: usize,
 }
 
-// Needed due to rust bug: https://github.com/rust-lang/rust/issues/26925
+// We can't use #[derive()] here for Copy and Clone due to a bug in the rust
+// compiler: https://github.com/rust-lang/rust/issues/26925
 impl<C: ListConfig> Copy for SkipEntry<C> {}
 impl<C: ListConfig> Clone for SkipEntry<C> {
     fn clone(&self) -> Self { *self }
 }
 
-// The node structure is designed in a very fancy way which would be more at
-// home in C or something like that. The basic idea is that the node structure
-// is fixed size in memory, but the proportion of that space taken up by
-// characters and by the height differ depending on a node's height. This
-// results in a lot of `unsafe` blocks. I think the tradeoff is worth it but I
-// could be wrong here. You probably wouldn't lose much performance in practice
-// by replacing the inline structure with a smallvec - but that would waste
-// memory in small nodes, and require extra pointer indirection on large nodes.
-// It also wouldn't remove all the unsafe here.
+impl<C: ListConfig> SkipEntry<C> {
+    fn new_null() -> Self {
+        SkipEntry { node: ptr::null_mut(), skip_usersize: 0 }
+    }
+}
 
-// A different representation (which might be better or worse - I can't tell)
-// would be to have the nodes all be the same size in memory and change the
-// *proportion* of the node's memory that is used by the string field vs the
-// next pointers. That might be lighter weight for the allocator because the
-// struct itself would be a fixed size; but I'm not sure if it would be better.
 
+/// The node structure is designed in a very fancy way which would be more at
+/// home in C or something like that. The basic idea is that the node structure
+/// is fixed size in memory, but the proportion of that space taken up by
+/// characters and by the height differ depending on a node's height. This
+/// results in a lot of `unsafe` blocks. I think the tradeoff is worth it but I
+/// could be wrong here. You probably wouldn't lose much performance in practice
+/// by replacing the inline structure with a smallvec - but that would waste
+/// memory in small nodes, and require extra pointer indirection on large nodes.
+/// It also wouldn't remove all the unsafe here.
+///
+/// A different representation (which might be better or worse - I can't tell)
+/// would be to have the nodes all be the same size in memory and change the
+/// *proportion* of the node's memory that is used by the string field vs the
+/// next pointers. That might be lighter weight for the allocator because the
+/// struct itself would be a fixed size; but I'm not sure if it would be better.
 #[repr(C)] // Prevent parameter reordering.
 struct Node<C: ListConfig> {
-    /// We start with the items themselves. The number of items in use is in
-    /// nexts[0].skip_items. This is initialized with Default::default() for the
-    /// type. When MaybeUninit completely lands, it will be possible to make
-    /// this a tiny bit faster using that instead; and just leave junk in the
-    /// array to start.
+    /// We start with the items themselves. Only the first `num_items` of this
+    /// list is in use. The user specified length of the items in the node is
+    /// stored in nexts[0].skip_items. This is initialized with
+    /// Default::default() for the type, but when MaybeUninit completely lands,
+    /// it will be possible to make this a tiny bit faster by leaving the list
+    /// initially uninitialized.
     items: [C::Item; NODE_NUM_ITEMS],
 
-    // Number of items in `items` in use / filled.
+    /// Number of items in `items` in use / filled.
     num_items: u8,
 
-    // Height of nexts array.
+    /// Height of nexts array.
     height: u8,
 
     // #[repr(align(std::align_of::<SkipEntry>()))]
     
-    // This array actually has the size of height, allocated using more or less
-    // direct calls to malloc(). It would be cleaner to declare it as
-    // [SkipEntry; 0], but I haven't done that because we always have at least a
-    // height of 1 anyway, and this makes it a bit cheaper to look at the first
-    // skipentry item.
+    /// In reality this array has the size of height, allocated using more or
+    /// less direct calls to malloc() at runtime based on the randomly generated
+    /// size. The size is always at least 1.
     nexts: [SkipEntry<C>; 0],
 }
 
@@ -135,19 +140,19 @@ fn test_align() {
 
 fn random_height<R: RngCore>(rng: &mut R) -> u8 {
     let mut h: u8 = 1;
-    // TODO: This is using the thread_local rng, which is secure but doesn't
-    // need to be. Check this is actually fast. I don't think it'll make much
-    // difference in practice but it might. Also moving to a prng might reduce
-    // code size; which might matter for some users.
-    // while h < MAX_HEIGHT_U8 && rng.gen_bool(BIAS) { h+=1; }
+    // Should I use a csrng here? Does it matter?
     while h < MAX_HEIGHT_U8 && rng.gen::<u8>() < BIAS { h+=1; }
-    // while h < MAX_HEIGHT_U8 && rand::random::<u8>() < BIAS { h+=1; }
     h
 }
 
 #[repr(C)]
 pub struct SkipList<C: ListConfig> {
-    // TODO: Put this on the heap. For the use case here its almost certainly fine.
+    // TODO: Consider putting the head item on the heap. For the use case here
+    // its almost certainly fine either way. The code feels a bit cleaner if its
+    // on the heap (and then iterators will be able to outlast a move of the
+    // skiplist parent). But its also very nice having the code run fast for
+    // small lists. Most lists are small, and it makes sense to optimize for
+    // that.
 
     // TODO: For safety, pointers in to this structure should be Pin<> if we
     // ever want to hold on to iterators.
@@ -155,10 +160,15 @@ pub struct SkipList<C: ListConfig> {
     /// The total number of items in the skip list. This is not used internally -
     /// just here for bookkeeping.
     num_items: usize,
+    /// Size of the list in user specified units.
     num_usercount: usize,
-    rng: SmallRng,
 
-    // get_usersize: GetUserSize,
+    /// The RNG we use to generate node heights. Specifying it explicitly allows
+    /// unit tests and randomizer runs to be predictable, which is very helpful
+    /// during debugging. I'm still not sure how the type of this should be
+    /// specified. Should it be a generic parameter? Box<dyn *>?
+    /// ??
+    rng: SmallRng,
 
     /// The first node is inline. The height is 1 more than the max height we've
     /// ever used. The highest next entry points to {null, total usersize}.
@@ -176,11 +186,6 @@ pub struct SkipList<C: ListConfig> {
 }
 
 
-impl<C: ListConfig> SkipEntry<C> {
-    fn new_null() -> Self {
-        SkipEntry { node: ptr::null_mut(), skip_usersize: 0 }
-    }
-}
 
 impl<C: ListConfig> Node<C> {
     // Do I need to be explicit about the lifetime of the references being tied
@@ -204,7 +209,6 @@ impl<C: ListConfig> Node<C> {
     }
 
     fn alloc_with_height(height: u8) -> *mut Node<C> {
-        //println!("height {} {}", height, max_height());
         assert!(height >= 1 && height <= MAX_HEIGHT_U8);
 
         unsafe {
@@ -276,12 +280,6 @@ impl<C: ListConfig> Node<C> {
         }
         panic!("Could not find requested offset within the node");
     }
-    
-
-    // fn mut_next<'a>(&mut self, i: usize) -> &'a mut SkipEntry {
-    //     assert!(i < self.height);
-    //     unsafe { &mut *self.nexts.as_mut_ptr() }
-    // }
 }
 
 struct NodeIter<'a, C: ListConfig>(Option<&'a Node<C>>);
@@ -297,18 +295,22 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
     }
 }
 
-// TODO: Add a phantom lifetime reference to the skip list root for safety.
+/// This is a set of pointers with metadata into a location in the list needed
+/// to skip ahead, delete and insert in items. A cursor is reasonably heavy
+/// weight - we fill in and maintain as many entries as the height of the list
+/// dictates.
+///
+/// This is not needed for simply iterating sequentially through nodes and data.
+/// For that look at NodeIter.
 #[derive(Copy, Clone, Debug)]
 struct Cursor<C: ListConfig> {
-
-    entries: [SkipEntry<C>; MAX_HEIGHT],
+    // TODO: Add a phantom lifetime reference to the skip list root for safety.
 
     // This isn't strictly necessary. Earlier versions tacked this on to the
     // last item in entries... I'm still not sure the cleanest way to do this.
     userpos: usize,
 
-    // / The offset into the pointed item
-    // item_offset: usize,
+    entries: [SkipEntry<C>; MAX_HEIGHT],
 }
 
 impl<C: ListConfig> Cursor<C> {
@@ -354,6 +356,7 @@ impl<C: ListConfig> Cursor<C> {
         }
     }
 
+    /// Get the pointer to the cursor's current node
     fn here_ptr(&self) -> *mut Node<C> {
         self.entries[0].node
     }
@@ -365,7 +368,6 @@ impl<C: ListConfig> SkipList<C> {
             num_items: 0,
             num_usercount: 0,
             rng: SmallRng::seed_from_u64(123),
-            // get_usersize: get_usersize,
             head: Node {
                 items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
@@ -382,17 +384,8 @@ impl<C: ListConfig> SkipList<C> {
         rope
     }
 
-    // fn head(&self) -> Option<&Node> {
-    //     unsafe { self.head.nexts[0].next() }
-    // }
-
-    // fn get_top_entry(&self) -> SkipEntry<C> {
-    //     self.head.nexts()[self.head.height as usize - 1]
-    // }
-
     pub fn get_userlen(&self) -> usize {
         self.num_usercount
-        // self.get_top_entry().skip_usersize
     }
 
     fn iter(&self) -> NodeIter<C> { NodeIter(Some(&self.head)) }
@@ -407,17 +400,9 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
-    // fn new() -> Self {
-    //     SkipList::new()
-    // }
-
-
-    // fn slice(&self, pos: usize, len: usize) -> Result<String, RopeError> {
-    //        unimplemented!();
-       // }
-
-    // pub fn to_vec(&self) -> Vec { self.into() }
-
+    /// Walk the list and validate internal constraints. This is used for
+    /// testing the structure itself, and should generally not be called by
+    /// users.
     pub fn check(&self) {
         // #[cfg(test)]
         {
@@ -426,8 +411,6 @@ impl<C: ListConfig> SkipList<C> {
 
             // let skip_over = self.get_top_entry();
             // println!("Skip over skip chars {}, num bytes {}", skip_over.skip_items, self.num_bytes);
-            // assert!(skip_over.skip_items <= self.num_items as usize);
-            // assert!(skip_over.node.is_null());
 
             let mut iter = [SkipEntry {
                 // Bleh.
@@ -473,7 +456,6 @@ impl<C: ListConfig> SkipList<C> {
             
             // println!("self bytes: {}, count bytes {}", self.num_bytes, num_bytes);
             assert_eq!(self.num_items, num_items);
-            // assert_eq!(self.num_usercount, num_usercount);
             assert_eq!(self.get_userlen(), num_usercount);
         }
     }
@@ -541,7 +523,6 @@ impl<C: ListConfig> SkipList<C> {
         // println!("Insert_node_at {} len {}", contents.len(), self.num_bytes);
         debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
         assert!(contents.len() <= NODE_NUM_ITEMS);
-        // assert_eq!(iter.entries[0].skip_usersize, 0);
 
         let new_node = Node::alloc(&mut self.rng);
         (*new_node).num_items = contents.len() as u8;
@@ -561,43 +542,27 @@ impl<C: ListConfig> SkipList<C> {
             nexts[head_height].skip_usersize = total_userlen;
             cursor.entries[head_height].skip_usersize = cursor.userpos;
 
-            // nexts[head_height] = nexts[head_height - 1];
-            // iter.entries[head_height] = iter.entries[head_height - 1];
-            head_height += 1;
+            head_height += 1; // This is ugly.
             self.head.height += 1;
         }
-
-        // self.head.height = head_height as u8;
-
-        // if head_height <= new_height_usize {
-        //     while head_height <= new_height_usize {
-        //         // The highest element in the head's nexts is 1 + the height of
-        //         // the max node we've ever had. It points past the end of the
-        //         // list.
-        //         let nexts = self.heads_mut();
-        //         nexts[head_height] = nexts[head_height - 1];
-        //         iter.entries[head_height] = iter.entries[head_height - 1];
-        //         head_height += 1;
-        //     }
-
-        //     self.head.height = head_height as u8;
-        // }
 
         for i in 0..new_height_usize {
             let prev_skip = &mut (*cursor.entries[i].node).nexts_mut()[i];
             let new_nexts = (*new_node).nexts_mut();
 
+            // The new node points to the successor (or null)
             new_nexts[i] = SkipEntry {
                 node: prev_skip.node,
                 skip_usersize: new_userlen + prev_skip.skip_usersize - cursor.entries[i].skip_usersize
             };
 
+            // The previous node points to the new node
             *prev_skip = SkipEntry {
                 node: new_node,
                 skip_usersize: cursor.entries[i].skip_usersize
             };
 
-            // & move the iterator to the end of the newly inserted node.
+            // Move the iterator to the end of the newly inserted node.
             cursor.entries[i] = SkipEntry {
                 node: new_node,
                 skip_usersize: new_userlen
@@ -609,7 +574,6 @@ impl<C: ListConfig> SkipList<C> {
             cursor.entries[i].skip_usersize += new_userlen;
         }
 
-        // self.nexts[self.head.height as usize - 1].skip_items += new_userlen;
         self.num_items += contents.len();
         self.num_usercount += new_userlen;
         cursor.userpos += new_userlen;
@@ -620,8 +584,7 @@ impl<C: ListConfig> SkipList<C> {
 
         let mut e = cursor.here_ptr();
         // The insertion offset into the destination node.
-        // let mut offset: usize = iter.entries[0].skip_usersize;
-        // assert!(offset <= (*e).nexts()[0].skip_usersize);
+        assert!(cursor.userpos <= self.num_usercount);
         assert!(item_idx <= (*e).num_items as usize);
 
         // We might be able to insert the new data into the current node, depending on
@@ -641,15 +604,7 @@ impl<C: ListConfig> SkipList<C> {
             // - There's room in the next node
             if let Some(next) = (*e).first_skip_entry_mut().node.as_mut() {
                 if next.num_items as usize + num_inserted_items <= NODE_NUM_ITEMS {
-                    // offset = 0; offset_bytes = 0;
                     item_idx = 0;
-                    // for i in 0..next.height {
-                    //     // tree offset nodes aren't used here; but they might be referred to by the caller.
-                    //     iter.entries[i as usize] = SkipEntry {
-                    //         node: next,
-                    //         skip_usersize: 0
-                    //     };
-                    // }
                     cursor.advance_node();
                     e = next;
 
@@ -663,24 +618,14 @@ impl<C: ListConfig> SkipList<C> {
         if insert_here {
             // println!("insert_here {}", contents);
             // First push the current items later in the array
-            // let c = (*e).content_mut();
             let c = &mut (*e).items;
             if item_idx < e_num_items {
                 c[..].copy_within(item_idx..e_num_items,
                     item_idx + num_inserted_items);
-                // ptr::copy(
-                //     &c[item_idx],
-                //     &mut c[item_idx + num_inserted_items],
-                //     e_num_items - item_idx);
             }
 
             // Then copy in the new items
             c[item_idx..item_idx + num_inserted_items].copy_from_slice(contents);
-            // ptr::copy_nonoverlapping(
-            //     &contents.as_bytes()[0],
-            //     &mut c[offset_bytes],
-            //     num_inserted_bytes
-            // );
 
             (*e).num_items += num_inserted_items as u8;
             self.num_items += num_inserted_items;
@@ -701,7 +646,7 @@ impl<C: ListConfig> SkipList<C> {
             // If we're not at the end of the current node, we'll need to remove
             // the end of the current node's data and reinsert it later.
             let num_end_items = e_num_items - item_idx;
-            // let mut num_end_usercount: usize = 0;
+
             let (end_items, end_usercount) = if num_end_items > 0 {
                 // We'll mark the items as deleted from the node, while leaving
                 // the data itself there for now to avoid a copy.
@@ -754,10 +699,8 @@ impl<C: ListConfig> SkipList<C> {
     unsafe fn del_at_iter(&mut self, cursor: &mut Cursor<C>, mut item_idx: usize, mut num_deleted_items: usize) {
         if num_deleted_items == 0 { return; }
 
-        // let mut offset = iter.entries[0].skip_usersize;
         let mut e = cursor.here_ptr();
         while num_deleted_items > 0 {
-            // if offset == s.skip_usersize {
             if item_idx == (*e).num_items as usize {
                 let entry = (*e).first_skip_entry();
                 // End of current node. Skip to the start of the next one. We're
@@ -768,38 +711,24 @@ impl<C: ListConfig> SkipList<C> {
                 e = entry.node;
                 if e.is_null() { panic!("Cannot delete past the end of the list"); }
                 item_idx = 0;
-                // offset = 0;
             }
 
-            // let num_chars = (*e).num_chars();
-            // let removed = min(length, num_chars - offset);
-            // assert!(removed > 0);
             let e_num_items = (*e).num_items as usize;
             let removed_here = min(num_deleted_items, e_num_items - item_idx);
-            // let removed_userlen = self.userlen_of_slice(&(*e).items[item_idx..item_idx + removed_here]);
             
             let height = (*e).height as usize;
             let removed_userlen;
 
             if removed_here < e_num_items || e as *const _ == &self.head as *const _ {
                 // Just trim the node down.
-                // let s = (*e).as_str();
-                // let leading_bytes = str_get_byte_offset(s, offset);
-                // let removed_bytes = str_get_byte_offset(&s[leading_bytes..], removed);
-                // let trailing_bytes = (*e).num_bytes as usize - leading_bytes - removed_bytes;
                 let trailing_items = e_num_items - item_idx - removed_here;
                 
                 let c = &mut (*e).items;
                 removed_userlen = C::userlen_of_slice(&c[item_idx..item_idx + removed_here]);
                 if trailing_items > 0 {
                     c[..].copy_within(item_idx + removed_here..e_num_items, item_idx);
-                    // ptr::copy(
-                    //     &c[leading_bytes + removed_bytes],
-                    //     &mut c[leading_bytes],
-                    //     trailing_bytes);
                 }
 
-                // (*e).num_bytes -= removed_bytes as u8;
                 (*e).num_items -= removed_here as u8;
                 self.num_items -= removed_here;
                 self.num_usercount -= removed_userlen;
@@ -807,7 +736,6 @@ impl<C: ListConfig> SkipList<C> {
                 for s in (*e).nexts_mut() {
                     s.skip_usersize -= removed_userlen;
                 }
-                // removed_userlen
             } else {
                 // Remove the node from the skip list entirely. e should be the
                 // next node after the position of the iterator.
@@ -834,7 +762,6 @@ impl<C: ListConfig> SkipList<C> {
                 s.skip_usersize -= removed_userlen;
             }
 
-            // length -= removed;
             num_deleted_items -= removed_here;
         }
     }
@@ -886,8 +813,6 @@ impl<C: ListConfig> SkipList<C> {
 
                 for i in 0..self.head.height as usize {
                     cursor.entries[i].skip_usersize += new_usersize;
-                    // dbg!(i);
-                    // dbg!(cursor.entries[i].skip_usersize);
                 }
                 cursor.userpos += new_usersize;
             }
@@ -952,7 +877,6 @@ impl<C: ListConfig> SkipList<C> where C::Item: PartialEq {
 }
 
 impl<C: ListConfig> Drop for SkipList<C> {
-// impl<T, F: Fn(&T) -> usize> Drop for SkipList<T, F> {
     fn drop(&mut self) {
         let mut node = self.head.first_skip_entry().node;
         unsafe {
