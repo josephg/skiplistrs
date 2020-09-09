@@ -243,7 +243,7 @@ mod test {
             if itemlen == 0 || (itemlen < 1000 && rng.gen::<f32>() < 0.5) {
                 // Insert.
                 let ins_itempos = rng.gen_range(0, itemlen+1);
-                let ins_userpos = vec_find_userpos::<C>(&vec, ins_itempos); // Could be buggy and we wouldn't notice.
+                let ins_userpos = C::userlen_of_slice(&vec[0..ins_itempos]);
                 if itemlen > 0 { assert!(userlen > 0); }
                 
                 let mut content = Vec::<C::Item>::new();
@@ -257,7 +257,7 @@ mod test {
             } else {
                 // Delete
                 let del_itempos = rng.gen_range(0, itemlen+1); // Sometimes delete nothing at the end.
-                let del_userpos = vec_find_userpos::<C>(&vec, del_itempos);
+                let del_userpos = C::userlen_of_slice(&vec[0..del_itempos]);
 
                 // Again some biasing here would be good.
                 let num_deleted_items = if vec.len() == del_itempos { 0 }
@@ -272,5 +272,10 @@ mod test {
     #[test]
     fn random_edits_flat() {
         random_edits::<TestConfigFlat>(|rng| rng.gen_range(0, 10));
+    }
+
+    #[test]
+    fn random_edits_nonuniform() {
+        random_edits::<TestConfigSized>(|rng| rng.gen_range(0, 10));
     }
 }
