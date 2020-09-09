@@ -403,7 +403,7 @@ impl<C: ListConfig> SkipList<C> {
 
     fn heads_mut(&mut self) -> &mut [SkipEntry<C>] {
         unsafe {
-            std::slice::from_raw_parts_mut(self.head.nexts.as_mut_ptr(), MAX_HEIGHT)
+            std::slice::from_raw_parts_mut(self.head.nexts.as_mut_ptr(), self._nexts_padding.len())
         }
     }
 
@@ -495,12 +495,14 @@ impl<C: ListConfig> SkipList<C> {
         
         let mut offset = target_userpos; // How many more items to skip
 
-        // We're populating it like this so the cursor will remain valid even if
-        // new items (with a larger max height) are inserted.
-        let mut iter = Cursor {
+        // We're populating the head node pointer to simplify the case when the
+        // iterator grows. We could put offset into the skip_usersize but it
+        // would only be *mostly* correct, not always correct. (Since cursor
+        // entries above height are not updated by insert.)
+        let mut cursor = Cursor {
             entries: [SkipEntry {
                 node: &self.head as *const _ as *mut _,
-                skip_usersize: offset
+                skip_usersize: usize::MAX
             }; MAX_HEIGHT],
             userpos: target_userpos,
         };
@@ -517,7 +519,7 @@ impl<C: ListConfig> SkipList<C> {
                 assert!(!e.is_null(), "Internal constraint violation: Reached rope end prematurely");
             } else {
                 // Record this and go down.
-                iter.entries[height] = SkipEntry {
+                cursor.entries[height] = SkipEntry {
                     skip_usersize: offset,
                     node: e as *mut Node<C>, // This is pretty gross
                 };
@@ -526,8 +528,9 @@ impl<C: ListConfig> SkipList<C> {
             }
         };
 
-        assert!(offset <= NODE_NUM_ITEMS);
-        iter
+        // We should always land within the node we're pointing to.
+        debug_assert!(offset <= unsafe { &*cursor.here_ptr() }.get_userlen());
+        cursor
     }
 
     // Internal fn to create a new node at the specified iterator filled with
@@ -899,8 +902,7 @@ impl<C: ListConfig> SkipList<C> {
                 self.del_at_iter(&mut cursor, index, removed_items);
             }
         }
-
-        // unsafe { self.insert_at_iter(&mut cursor, index, contents); }
+        // TODO: Assert that the iterator is after replaced content.
     }
 
     pub fn insert_at(&mut self, mut userpos: usize, contents: &[C::Item]) {
@@ -911,6 +913,7 @@ impl<C: ListConfig> SkipList<C> {
         let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
         unsafe { self.insert_at_iter(&mut cursor, index, contents); }
+        // TODO: Assert that the iterator now points after removed content.
     }
 
     pub fn del_at(&mut self, mut userpos: usize, num_items: usize) {
@@ -924,6 +927,7 @@ impl<C: ListConfig> SkipList<C> {
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
         unsafe { self.del_at_iter(&mut cursor, index, num_items); }
+        // TODO: Assert that the iterator remains where it was.
     }
 }
 
