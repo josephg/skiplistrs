@@ -23,19 +23,16 @@ mod test {
     fn check<'a, C: ListConfig>(list: &SkipList<C>, expected: &'a [C::Item])
         where C::Item: PartialEq + Debug
     {
+        list.print();
         list.check();
-        // r.print();
         assert!(list.eq_list(expected));
         
         let vec: Vec<C::Item> = list.into();
         assert_eq!(vec, expected);
         assert_eq!(list.len_items(), expected.len());
+        assert_eq!(list.get_userlen(), C::userlen_of_slice(expected));
 
-        // list.userlen_of_slice(expected);
-        // expected.iter().fold(0, |acc, item| {
-        //     acc + (self.get_usersize)(item)
-        // })
-        // assert_eq!(r.char_len(), expected.chars().count());
+        // assert_eq!(list, SkipList::from(expected));
         // assert!(*r == SkipList::from(expected), "Rope comparison fails");
 
         // let clone = r.clone();
@@ -75,32 +72,32 @@ mod test {
         // list.print();
     }
     
+    #[test]
+    fn empty_list_has_no_contents() {
+        let mut list = SkipList::<TestConfig>::new();
+        check(&list, &[]);
 
-    // #[test]
-    // fn empty_list_has_no_contents() {
-    //     let mut r = SkipList::new(item_size_one(_x: &u8));
-    //     check(&r, "");
+        list.insert_at(0, &[]);
+        check(&list, &[]);
+    }
 
-    //     r.insert_at(0, &[]);
-    //     check(&r, "");
-    // }
+    #[test]
+    fn insert_at_location() {
+        let mut list = SkipList::<TestConfig>::new();
 
-    // #[test]
-    // fn insert_at_location() {
-    //     let mut r = SkipList::new();
+        list.insert_at(0, &[1,1,1]);
+        check(&list, &[1,1,1]);
 
-    //     r.insert_at(0, "AAA");
-    //     check(&r, "AAA");
+        list.insert_at(0, &[2,2,2]);
+        check(&list, &[2,2,2,1,1,1]);
 
-    //     r.insert_at(0, "BBB");
-    //     check(&r, "BBBAAA");
+        list.insert_at(6, &[3,3,3]);
+        check(&list, &[2,2,2,1,1,1,3,3,3]);
 
-    //     r.insert_at(6, "CCC");
-    //     check(&r, "BBBAAACCC");
-
-    //     r.insert_at(5, "DDD");
-    //     check(&r, "BBBAADDDACCC");
-    // }
+        list.insert_at(5, &[4,4,4]);
+        list.print();
+        check(&list, &[2,2,2,1,1,4,4,4,1,3,3,3]);
+    }
 
     // #[test]
     // fn new_string_has_content() {

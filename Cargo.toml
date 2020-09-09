@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Joseph Gentle <me@josephg.com>"]
 
 [dependencies]
-rand = "0.7"
+rand = { version = "0.7", features = ["small_rng"] }
 
 [dev-dependencies]
 
