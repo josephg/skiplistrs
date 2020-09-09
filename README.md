@@ -1,12 +1,14 @@
-# Rope in Rust
+# Skiplist in Rust
 
-This is a straight rust port of my [C rope library](https://github.com/josephg/librope). Its mostly complete - although its missing wide character conversion
+> Status: Experimental
 
-This library was largely written as a learning exercise, to compare high performance rust vs the equivalent C code. Interestingly, while application code written in rust seems to end up smaller than its C equivalent, this library has ended up about the same size. My hot take is that rust's expressive advantages don't seem to amount to much when implementing deep data structures.
+This is a high performance implementation of a skiplist in rust. Skip lists are super fun structures which can be used as you would a B-Tree. Their performance is similar, and their implementation is arguably slightly more simple.
 
-That said, I suspect there's a way to use rust's generics to add wide character support, newline iteration, and stuff like that in a templated way. That would be a huge win over the C version, which is littered with #ifdefs.
+This skip list is designed for items with variable sizes (eg run-length encoded nodes). When inserting or removing items, positions can be passed using the custom units.
 
-I've uploaded [benchmarks here](https://josephg.com/ropereport/report/). Given [ropey](https://crates.io/crates/ropey) is both faster and more feature rich than this library, I'm not going to upload it to cargo or continue developing. Well played [@cessen](https://github.com/cessen).
+This code was originally [written in C](https://github.com/josephg/librope) as a high performance unicode rope (supporting efficient inserts and removes at arbitrary positions in strings). It was then [ported to rust](https://github.com/josephg/rustrope) and finally adapted here for custom data structures. I recommend not using this implementation for ropes.
+
+This is still a work in progress. There may be bugs. For usage examples, see [tests/test.rs](tests/test.rs).
 
 
 # LICENSE

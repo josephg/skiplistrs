@@ -60,7 +60,7 @@ pub trait ListConfig {
 
 /// This represents a single entry in either the nexts pointers list or in an
 /// iterator.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct SkipEntry<C: ListConfig> {
     /// The node being pointed to.
     node: *mut Node<C>,
@@ -302,6 +302,15 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 ///
 /// This is not needed for simply iterating sequentially through nodes and data.
 /// For that look at NodeIter.
+///
+/// Note most/all methods using cursors are unsafe. This is because cursors use
+/// raw mutable pointers into the list, so when used the following rules have to
+/// be followed:
+///
+/// - Whenever a write happens (insert/remove/replace), any cursor not passed to
+///   the write function is invalid.
+/// - While a cursor is held the SkipList struct should be considered pinned and
+///   must not be moved or deleted
 #[derive(Copy, Clone, Debug)]
 struct Cursor<C: ListConfig> {
     // TODO: Add a phantom lifetime reference to the skip list root for safety.
@@ -361,6 +370,19 @@ impl<C: ListConfig> Cursor<C> {
         self.entries[0].node
     }
 }
+
+impl<C: ListConfig> PartialEq for Cursor<C> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.userpos != other.userpos { return false; }
+        for i in 0..MAX_HEIGHT {
+            let a = &self.entries[i];
+            let b = &other.entries[i];
+            if a.node != b.node || a.skip_usersize != b.skip_usersize { return false; }
+        }
+        true
+    }
+}
+impl<C: ListConfig> Eq for Cursor<C> {}
 
 impl<C: ListConfig> SkipList<C> {
     pub fn new() -> Self {
@@ -769,6 +791,9 @@ impl<C: ListConfig> SkipList<C> {
     pub fn replace_at(&mut self, mut start_userpos: usize, mut removed_items: usize, mut inserted_content: &[C::Item]) {
         if removed_items == 0 && inserted_content.len() == 0 { return; }
 
+        // For validation. This is where the cursor should end up.
+        // let expected_final_position = start_userpos + inserted_content.len() - removed_items;
+
         start_userpos = min(start_userpos, self.get_userlen());
 
         let mut cursor = self.iter_at_userpos(start_userpos);
@@ -827,7 +852,12 @@ impl<C: ListConfig> SkipList<C> {
                 self.del_at_iter(&mut cursor, index, removed_items);
             }
         }
+
         // TODO: Assert that the iterator is after replaced content.
+        // #[cfg(debug_assertions)] {
+        //     let c2 = self.iter_at_userpos(expected_final_position);
+        //     if &cursor != &c2 { panic!("Invalid cursor after replace"); }
+        // }
     }
 
     pub fn insert_at(&mut self, mut userpos: usize, contents: &[C::Item]) {

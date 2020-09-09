@@ -71,13 +71,11 @@ mod test {
         let mut list = SkipList::<TestConfigFlat>::new_from_slice(&[1,2,3,4]);
         check(&list, &[1,2,3,4]);
         
-        list.del_at(1, 2); // DeleTestConfigFlat
+        list.del_at(1, 2);
         check(&list, &[1,4]);
-        // list.print();
         
-        list.replace_at(1, 1, &[5,6,7]); // List should now be 1, 1, 2, 3, 4.
+        list.replace_at(1, 1, &[5,6,7]);
         check(&list, &[1,5,6,7]);
-        // list.print();
     }
     
     #[test]
