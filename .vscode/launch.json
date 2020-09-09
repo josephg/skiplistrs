@@ -39,7 +39,7 @@
                     "kind": "test"
                 }
             },
-            "args": ["--nocapture", "test::simple_edits"],
+            "args": ["--nocapture", "test::insert_at"],
             "cwd": "${workspaceFolder}"
         }
     ]

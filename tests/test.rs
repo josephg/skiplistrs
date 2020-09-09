@@ -14,10 +14,20 @@ mod test {
 
     use std::fmt::Debug;
 
-    struct TestConfig;
-    impl ListConfig for TestConfig {
+    // This config makes all items take up the same amount of space.
+    struct TestConfigFlat;
+    impl ListConfig for TestConfigFlat {
         type Item = u8;
-        fn get_usersize(_item: &Self::Item) -> usize { 1 }
+    }
+
+    // Here each item names how much space it takes up, so we can try complex
+    // positioning.
+    struct TestConfigSized;
+    impl ListConfig for TestConfigSized {
+        type Item = u8;
+        fn get_usersize(item: &u8) -> usize {
+            *item as usize
+        }
     }
 
     fn check<'a, C: ListConfig>(list: &SkipList<C>, expected: &'a [C::Item])
@@ -41,17 +51,15 @@ mod test {
         // assert!(*r == clone, "Rope does not equal its clone");
     }
 
-    fn item_size_one(_x: &u8) -> usize { 1 }
-
     #[test]
     fn sanity() {
         // Lets start by making sure the eq_list() method works right.
-        let list = SkipList::<TestConfig>::new();
+        let list = SkipList::<TestConfigFlat>::new();
         assert!(list.eq_list(&[]));
         assert!(!list.eq_list(&[1]));
         check(&list, &[]);
         
-        let list = SkipList::<TestConfig>::new_from_slice(&[1,2,3,4]);
+        let list = SkipList::<TestConfigFlat>::new_from_slice(&[1,2,3,4]);
         assert!(list.eq_list(&[1,2,3,4]));
         assert!(!list.eq_list(&[1,2,3,5]));
         assert!(!list.eq_list(&[1,2,3]));
@@ -60,10 +68,10 @@ mod test {
 
     #[test]
     fn simple_edits() {
-        let mut list = SkipList::<TestConfig>::new_from_slice(&[1,2,3,4]);
+        let mut list = SkipList::<TestConfigFlat>::new_from_slice(&[1,2,3,4]);
         check(&list, &[1,2,3,4]);
         
-        list.del_at(1, 2); // Delete 2,3.
+        list.del_at(1, 2); // DeleTestConfigFlat
         check(&list, &[1,4]);
         // list.print();
         
@@ -74,7 +82,7 @@ mod test {
     
     #[test]
     fn empty_list_has_no_contents() {
-        let mut list = SkipList::<TestConfig>::new();
+        let mut list = SkipList::<TestConfigFlat>::new();
         check(&list, &[]);
 
         list.insert_at(0, &[]);
@@ -83,7 +91,7 @@ mod test {
 
     #[test]
     fn insert_at_location() {
-        let mut list = SkipList::<TestConfig>::new();
+        let mut list = SkipList::<TestConfigFlat>::new();
 
         list.insert_at(0, &[1,1,1]);
         check(&list, &[1,1,1]);
@@ -95,7 +103,6 @@ mod test {
         check(&list, &[2,2,2,1,1,1,3,3,3]);
 
         list.insert_at(5, &[4,4,4]);
-        list.print();
         check(&list, &[2,2,2,1,1,4,4,4,1,3,3,3]);
     }
 

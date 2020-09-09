@@ -25,7 +25,7 @@ const BIAS: u8 = 100; // likelihood out of 256.
 
 /// The number of items in each node. Must fit in a u8 thanks to Node.
 // const NODE_NUM_ITEMS: usize = 100;
-const NODE_NUM_ITEMS: usize = 3;
+const NODE_NUM_ITEMS: usize = 100;
 
 /// Rope operations will move to linear time after NODE_STR_SIZE * 2 ^
 /// MAX_HEIGHT length. (With a smaller constant the higher this is). On the flip
@@ -711,8 +711,12 @@ impl<C: ListConfig> SkipList<C> {
                 let end_usercount = (*e).get_userlen() - cursor.entries[0].skip_usersize;
 
                 cursor.update_offsets(self.head.height as usize, -(end_usercount as isize));
+
+                // We need to trim the size off because we'll add the characters
+                // back with insert_node_at.
                 self.num_usercount -= end_usercount;
-                self.num_items = item_idx;
+                self.num_items -= num_end_items;
+
                 (Some(end_items), end_usercount)
             } else {
                 (None, 0)
