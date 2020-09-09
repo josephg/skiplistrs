@@ -889,6 +889,52 @@ impl<C: ListConfig> Drop for SkipList<C> {
     }
 }
 
+
+impl<C: ListConfig> From<&[C::Item]> for SkipList<C> {
+    fn from(s: &[C::Item]) -> SkipList<C> {
+        SkipList::new_from_slice(s)
+    }
+}
+
+impl<C: ListConfig> From<Vec<C::Item>> for SkipList<C> {
+    fn from(s: Vec<C::Item>) -> SkipList<C> {
+        SkipList::new_from_slice(s.as_slice())
+    }
+}
+
+impl<C: ListConfig> Into<Vec<C::Item>> for &SkipList<C> {
+    fn into(self) -> Vec<C::Item> {
+        let mut content = Vec::with_capacity(self.num_items);
+
+        for node in self.iter() {
+            content.extend(node.content_slice().iter());
+        }
+
+        content
+    }
+}
+
+impl<C: ListConfig> SkipList<C> where C::Item: std::fmt::Debug {
+    // TODO: Don't export this.
+    pub fn print(&self) {
+        println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.get_userlen(), self.head.height);
+
+        print!("HEAD:");
+        for s in self.head.nexts() {
+            print!(" |{} ", s.skip_usersize);
+        }
+        println!("");
+
+        for (i, node) in self.iter().enumerate() {
+            print!("{}:", i);
+            for s in node.nexts() {
+                print!(" |{} ", s.skip_usersize);
+            }
+            println!("      : {:?}", node.content_slice());
+        }
+    }
+}
+
 // impl<T: Default + Copy, F: Fn(&T) -> usize> PartialEq for SkipList<T, F> {
 //     // This is quite complicated. It would be cleaner to just write a bytes
 //     // iterator, then iterate over the bytes of both strings comparing along the
@@ -943,30 +989,6 @@ impl<C: ListConfig> Drop for SkipList<C> {
 // }
 // impl<T: Default + Copy, F: Fn(&T) -> usize> Eq for SkipList<T, F> {}
 
-impl<C: ListConfig> From<&[C::Item]> for SkipList<C> {
-    fn from(s: &[C::Item]) -> SkipList<C> {
-        SkipList::new_from_slice(s)
-    }
-}
-
-impl<C: ListConfig> From<Vec<C::Item>> for SkipList<C> {
-    fn from(s: Vec<C::Item>) -> SkipList<C> {
-        SkipList::new_from_slice(s.as_slice())
-    }
-}
-
-impl<C: ListConfig> Into<Vec<C::Item>> for &SkipList<C> {
-    fn into(self) -> Vec<C::Item> {
-        let mut content = Vec::with_capacity(self.num_items);
-
-        for node in self.iter() {
-            content.extend(node.content_slice().iter());
-        }
-
-        content
-    }
-}
-
 // impl<T: Default + Copy, F> Clone for SkipList<T, F> where F: Fn(&T) -> usize {
 //     fn clone(&self) -> Self {
 //         let mut r = SkipList::new(self.get_usersize);
@@ -1012,24 +1034,3 @@ impl<C: ListConfig> Into<Vec<C::Item>> for &SkipList<C> {
 //         r
 //     }
 // }
-
-impl<C: ListConfig> SkipList<C> where C::Item: std::fmt::Debug {
-    // TODO: Don't export this.
-    pub fn print(&self) {
-        println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.get_userlen(), self.head.height);
-
-        print!("HEAD:");
-        for s in self.head.nexts() {
-            print!(" |{} ", s.skip_usersize);
-        }
-        println!("");
-
-        for (i, node) in self.iter().enumerate() {
-            print!("{}:", i);
-            for s in node.nexts() {
-                print!(" |{} ", s.skip_usersize);
-            }
-            println!("      : {:?}", node.content_slice());
-        }
-    }
-}
