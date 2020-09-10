@@ -859,77 +859,75 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
-    pub fn replace_at(&mut self, mut start_userpos: usize, mut removed_items: usize, mut inserted_content: &[C::Item]) {
+    unsafe fn replace_at_iter(&mut self, cursor: &mut Cursor<C>, mut removed_items: usize, mut inserted_content: &[C::Item]) {
         if removed_items == 0 && inserted_content.len() == 0 { return; }
 
-        // For validation. This is where the cursor should end up.
-        let advanced_by = inserted_content.len();
+        // Replace as many items from removed_items as we can with inserted_content.
+        let mut replaced_items = min(removed_items, inserted_content.len());
+        removed_items -= replaced_items;
 
+        while replaced_items > 0 {
+            let mut e = cursor.here_ptr();
+            if cursor.local_index == (*e).num_items as usize {
+                // Move to the next item.
+                e = cursor.advance_node();
+                if e.is_null() { panic!("Cannot replace past the end of the list"); }
+            }
+
+            let index = cursor.local_index;
+
+            let e_num_items = (*e).num_items as usize;
+            let replaced_items_here = min(replaced_items, e_num_items - index);
+
+            let old_items = &mut (*e).items[index..index + replaced_items_here];
+            let new_items = &inserted_content[0..replaced_items_here];
+
+            let new_usersize = C::userlen_of_slice(new_items);
+            let usersize_delta = new_usersize as isize - C::userlen_of_slice(old_items) as isize;
+
+            // Replace the items themselves. Everything else is commentary.
+            old_items.copy_from_slice(new_items);
+
+            if usersize_delta != 0 {
+                cursor.update_offsets(self.head.height as usize, usersize_delta)
+            }
+            // I hate this.
+            self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
+
+            inserted_content = &inserted_content[replaced_items_here..];
+            replaced_items -= replaced_items_here;
+            // We'll hop to the next Node at the start of the next loop
+            // iteration if needed.
+            cursor.local_index += replaced_items_here;
+
+            for i in 0..self.head.height as usize {
+                cursor.entries[i].skip_usersize += new_usersize;
+            }
+            cursor.userpos += new_usersize;
+        }
+
+        // Ok now one of two things must be true. Either we've run out of
+        // items to remove, or we've run out of items to insert.
+        if inserted_content.len() > 0 {
+            // Insert!
+            debug_assert!(removed_items == 0);
+            self.insert_at_iter(cursor, inserted_content);
+        } else if removed_items > 0 {
+            self.del_at_iter(cursor, removed_items);
+        }
+    }
+
+    pub fn replace_at(&mut self, mut start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) {
         start_userpos = min(start_userpos, self.get_userlen());
 
         let (mut cursor, offset) = self.iter_at_userpos(start_userpos);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
-        // Replace as many items from removed_items as we can with inserted_content.
-        unsafe {
-            let mut replaced_items = min(removed_items, inserted_content.len());
-            removed_items -= replaced_items;
+        unsafe { self.replace_at_iter(&mut cursor, removed_items, inserted_content); }
 
-            while replaced_items > 0 {
-                let mut e = cursor.here_ptr();
-                if cursor.local_index == (*e).num_items as usize {
-                    // Move to the next item.
-                    e = cursor.advance_node();
-                    if e.is_null() { panic!("Cannot replace past the end of the list"); }
-                }
-
-                let index = cursor.local_index;
-
-                let e_num_items = (*e).num_items as usize;
-                let replaced_items_here = min(replaced_items, e_num_items - index);
-
-                let old_items = &mut (*e).items[index..index + replaced_items_here];
-                let new_items = &inserted_content[0..replaced_items_here];
-
-                let new_usersize = C::userlen_of_slice(new_items);
-                let usersize_delta = new_usersize as isize - C::userlen_of_slice(old_items) as isize;
-
-                // Replace the items themselves. Everything else is commentary.
-                old_items.copy_from_slice(new_items);
-
-                if usersize_delta != 0 {
-                    cursor.update_offsets(self.head.height as usize, usersize_delta)
-                }
-                // I hate this.
-                self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
-
-                inserted_content = &inserted_content[replaced_items_here..];
-                replaced_items -= replaced_items_here;
-                // We'll hop to the next Node at the start of the next loop
-                // iteration if needed.
-                cursor.local_index += replaced_items_here;
-
-                for i in 0..self.head.height as usize {
-                    cursor.entries[i].skip_usersize += new_usersize;
-                }
-                cursor.userpos += new_usersize;
-            }
-
-            // Ok now one of two things must be true. Either we've run out of
-            // items to remove, or we've run out of items to insert.
-            if inserted_content.len() > 0 {
-                // Insert!
-                debug_assert!(removed_items == 0);
-                self.insert_at_iter(&mut cursor, inserted_content);
-            } else if removed_items > 0 {
-                self.del_at_iter(&mut cursor, removed_items);
-            }
-        }
-
-        // TODO: Assert that the iterator is after replaced content.
         if cfg!(debug_assertions) {
             let (mut c2, _) = self.iter_at_userpos(start_userpos);
-            c2.advance_by_items(advanced_by, self.head.height);
+            c2.advance_by_items(inserted_content.len(), self.head.height);
             if &cursor != &c2 { panic!("Invalid cursor after replace"); }
         }
     }
