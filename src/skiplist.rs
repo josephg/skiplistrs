@@ -23,14 +23,22 @@ use rand::rngs::SmallRng;
 const BIAS: u8 = 100; // out of 256.
 
 /// The number of items in each node. Must fit in a u8 thanks to Node.
-// const NODE_NUM_ITEMS: usize = 100;
+#[cfg(test)]
+const NODE_NUM_ITEMS: usize = 2;
+
+#[cfg(not(test))]
 const NODE_NUM_ITEMS: usize = 100;
 
 /// Rope operations will move to linear time after NODE_STR_SIZE * 2 ^
 /// MAX_HEIGHT length. (With a smaller constant the higher this is). On the flip
 /// side, cursors grow linearly with this number; so smaller is marginally
 /// better when the contents are smaller.
-const MAX_HEIGHT: usize = 20;
+#[cfg(test)]
+const MAX_HEIGHT: usize = 2;
+
+#[cfg(not(test))]
+const MAX_HEIGHT: usize = 10;
+
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
@@ -257,29 +265,6 @@ impl<C: ListConfig> Node<C> {
     fn get_next_ptr(&self) -> *mut Node<C> {
         self.first_skip_entry().node
     }
-
-    /// I dunno where this logic should live, but we want to get the index of
-    /// the item at the specified offset into the node (and the offset into the
-    /// item).
-    /// 
-    /// If the offset lands between items, we could return either the previous or next item.
-    /// 
-    /// Returns (index, item_offset).
-    fn get_iter_idx(&self, mut usersize_offset: usize, stick_end: bool) -> (usize, usize) {
-        if usersize_offset == 0 { return (0, 0); }
-
-        for (i, item) in self.content_slice().iter().enumerate() {
-            let usersize = C::get_usersize(item);
-            if usersize > usersize_offset {
-                return (i, usersize_offset);
-            } else if usersize == usersize_offset {
-                return if stick_end { (i, usersize_offset) } else { (i+1, 0) }
-            } else {
-                usersize_offset -= usersize;
-            }
-        }
-        panic!("Could not find requested offset within the node");
-    }
 }
 
 struct NodeIter<'a, C: ListConfig>(Option<&'a Node<C>>);
@@ -315,9 +300,20 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 struct Cursor<C: ListConfig> {
     // TODO: Add a phantom lifetime reference to the skip list root for safety.
 
-    // This isn't strictly necessary. Earlier versions tacked this on to the
-    // last item in entries... I'm still not sure the cleanest way to do this.
+
+    /// The global user position of the cursor in the entire list. This is used
+    /// for when the max seen height increases, so we can populate previously
+    /// unused entries in the cursor and in the head node.
+    ///
+    /// This field isn't strictly necessary - earlier versions tacked this on to
+    /// the last item in entries... I'm still not sure the cleanest way to do
+    /// this.
     userpos: usize,
+
+    /// When the userpos of an entry is 0 (totally valid and useful), a cursor
+    /// becomes ambiguous with regard to where exactly its pointing in the
+    /// current entry. This is used to resolve that ambiguity.
+    local_index: usize,
 
     entries: [SkipEntry<C>; MAX_HEIGHT],
 }
@@ -360,9 +356,33 @@ impl<C: ListConfig> Cursor<C> {
             }
 
             self.userpos += advance_by;
+            self.local_index = 0;
 
             next
         }
+    }
+
+    fn is_at_node_end(&self) -> bool {
+        self.local_index == unsafe { (*self.here_ptr()).num_items } as usize
+    }
+
+    fn advance_item(&mut self, height: u8) {
+        if self.is_at_node_end() { self.advance_node(); }
+        let usersize = C::get_usersize(unsafe { self.current_item() });
+
+        for entry in &mut self.entries[0..height as usize] {
+            entry.skip_usersize += usersize;
+        }
+        self.userpos += usersize;
+        self.local_index += 1;
+    }
+
+    fn advance_by_items(&mut self, num: usize, height: u8) {
+        for _ in 0..num { self.advance_item(height); }
+    }
+
+    unsafe fn current_item(&mut self) -> &C::Item {
+        &(*self.here_ptr()).items[self.local_index]
     }
 
     /// Get the pointer to the cursor's current node
@@ -372,8 +392,14 @@ impl<C: ListConfig> Cursor<C> {
 }
 
 impl<C: ListConfig> PartialEq for Cursor<C> {
+    /// Warning: This returns false if one cursor is at the end of a node, and
+    /// the other at the start of the next node. Almost all code in this library
+    /// leaves cursors at the end of nodes, so this shouldn't matter too much in
+    /// practice.
     fn eq(&self, other: &Self) -> bool {
-        if self.userpos != other.userpos { return false; }
+        if self.userpos != other.userpos
+            || self.local_index != other.local_index {return false; }
+
         for i in 0..MAX_HEIGHT {
             let a = &self.entries[i];
             let b = &other.entries[i];
@@ -448,7 +474,8 @@ impl<C: ListConfig> SkipList<C> {
 
             for n in self.iter() {
                 // println!("visiting {:?}", n.as_str());
-                assert!((n as *const Node<C> == &self.head as *const Node<C>) || n.num_items > 0);
+                let is_head = n as *const _ == &self.head as *const _;
+                if !is_head { assert!(n.num_items > 0); }
                 assert!(n.height <= MAX_HEIGHT_U8);
                 assert!(n.num_items as usize <= NODE_NUM_ITEMS);
 
@@ -484,14 +511,24 @@ impl<C: ListConfig> SkipList<C> {
     
     
     /// Internal function for creating a cursor at a particular location in the
-    /// skiplist. The returned cursor is a list of nodes which point past the
-    /// specified position, as well as offsets of how far into their character
-    /// lists the specified characters are.
+    /// skiplist. The returned cursor contains list of nodes which point past
+    /// the specified position, as well as offsets of how far into their
+    /// character lists the specified characters are.
+    ///
+    /// Sometimes a call to iter_at_userpos is ambiguous:
+    ///
+    /// - The item can contain items with zero usersize. The cursor could point
+    ///   to any of them.
+    /// - If the location is at the end of a node, it is equally valid to return
+    ///   a position at the start of the next node.
+    ///
+    /// Because its impossible to move backwards in the list, iter_at_userpos
+    /// returns the first admissible location with the specified userpos.
     /// 
-    /// Note this does not calculate the index and offset in the current node.
+    /// Returns (cursor, offset into the specified item).
     ///
     /// TODO: This should be Pin<&self>.
-    fn iter_at_userpos(&self, target_userpos: usize) -> Cursor<C> {
+    fn iter_at_userpos(&self, target_userpos: usize) -> (Cursor<C>, usize) {
         assert!(target_userpos <= self.get_userlen());
 
         let mut e: *const Node<C> = &self.head;
@@ -508,6 +545,7 @@ impl<C: ListConfig> SkipList<C> {
                 node: &self.head as *const _ as *mut _,
                 skip_usersize: usize::MAX
             }; MAX_HEIGHT],
+            local_index: 0,
             userpos: target_userpos,
         };
 
@@ -534,14 +572,29 @@ impl<C: ListConfig> SkipList<C> {
 
         // We should always land within the node we're pointing to.
         debug_assert!(offset <= unsafe { &*cursor.here_ptr() }.get_userlen());
-        cursor
+
+        // We've found the node. Now look for the index within the node.
+        let en = unsafe { &*e };
+        let mut index = 0;
+
+        while offset > 0 {
+            assert!(index < en.num_items as usize);
+            
+            let usersize = C::get_usersize(&en.items[index]);
+            if usersize > offset { break; } // We're in the middle of an item.
+            offset -= usersize;
+            index += 1;
+        }
+        cursor.local_index = index;
+
+        (cursor, offset)
     }
 
     // Internal fn to create a new node at the specified iterator filled with
     // the specified content. The passed cursor should point at the end of the
     // previous node. It will be updated to point to the end of the newly
     // inserted content.
-    unsafe fn insert_node_at(&mut self, cursor: &mut Cursor<C>, contents: &[C::Item], new_userlen: usize) {
+    unsafe fn insert_node_at(&mut self, cursor: &mut Cursor<C>, contents: &[C::Item], new_userlen: usize, move_cursor: bool) {
         // println!("Insert_node_at {} len {}", contents.len(), self.num_bytes);
         debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
         assert!(contents.len() <= NODE_NUM_ITEMS);
@@ -585,29 +638,37 @@ impl<C: ListConfig> SkipList<C> {
             };
 
             // Move the iterator to the end of the newly inserted node.
-            cursor.entries[i] = SkipEntry {
-                node: new_node,
-                skip_usersize: new_userlen
-            };
+            if move_cursor {
+                cursor.entries[i] = SkipEntry {
+                    node: new_node,
+                    skip_usersize: new_userlen
+                };
+            }
         }
 
         for i in new_height_usize..head_height {
             (*cursor.entries[i].node).nexts_mut()[i].skip_usersize += new_userlen;
-            cursor.entries[i].skip_usersize += new_userlen;
+            if move_cursor {
+                cursor.entries[i].skip_usersize += new_userlen;
+            }
         }
-
+        
         self.num_items += contents.len();
         self.num_usercount += new_userlen;
-        cursor.userpos += new_userlen;
+        if move_cursor {
+            cursor.userpos += new_userlen;
+            cursor.local_index = contents.len();
+        }
     }
 
-    unsafe fn insert_at_iter(&mut self, cursor: &mut Cursor<C>, mut item_idx: usize, contents: &[C::Item]) {
+    unsafe fn insert_at_iter(&mut self, cursor: &mut Cursor<C>, contents: &[C::Item]) {
         // iter specifies where to insert.
 
         let mut e = cursor.here_ptr();
+
         // The insertion offset into the destination node.
         assert!(cursor.userpos <= self.num_usercount);
-        assert!(item_idx <= (*e).num_items as usize);
+        assert!(cursor.local_index <= (*e).num_items as usize);
 
         // We might be able to insert the new data into the current node, depending on
         // how big it is.
@@ -618,7 +679,7 @@ impl<C: ListConfig> SkipList<C> {
         let mut insert_here = (*e).num_items as usize + num_inserted_items <= NODE_NUM_ITEMS;
 
         // Can we insert into the start of the successor node?
-        if !insert_here && item_idx == (*e).num_items as usize && num_inserted_items <= NODE_NUM_ITEMS {
+        if !insert_here && cursor.local_index == (*e).num_items as usize && num_inserted_items <= NODE_NUM_ITEMS {
             // We can insert into the subsequent node if:
             // - We can't insert into the current node
             // - There _is_ a next node to insert into
@@ -626,7 +687,6 @@ impl<C: ListConfig> SkipList<C> {
             // - There's room in the next node
             if let Some(next) = (*e).first_skip_entry_mut().node.as_mut() {
                 if next.num_items as usize + num_inserted_items <= NODE_NUM_ITEMS {
-                    item_idx = 0;
                     cursor.advance_node();
                     e = next;
 
@@ -635,6 +695,7 @@ impl<C: ListConfig> SkipList<C> {
             }
         }
 
+        let item_idx = cursor.local_index;
         let e_num_items = (*e).num_items as usize; // convenience.
 
         if insert_here {
@@ -656,8 +717,14 @@ impl<C: ListConfig> SkipList<C> {
             // .... aaaand update all the offset amounts.
             cursor.update_offsets(self.head.height as usize, num_inserted_usercount as isize);
 
-            // TODO: For consistency we might want to think about updating the
-            // iterator here.
+            // Usually the cursor will be discarded after one change, but for
+            // consistency of compound edits we'll update the cursor to point to
+            // the end of the new content.
+            for entry in cursor.entries[0..self.head.height as usize].iter_mut() {
+                entry.skip_usersize += num_inserted_usercount;
+            }
+            cursor.userpos += num_inserted_usercount;
+            cursor.local_index += num_inserted_items;
         } else {
             // There isn't room. We'll need to add at least one new node to the
             // list. We could be a bit more careful here and copy as much as
@@ -700,13 +767,16 @@ impl<C: ListConfig> SkipList<C> {
             
             for chunk in contents.chunks(NODE_NUM_ITEMS) {
                 let userlen = C::userlen_of_slice(chunk);
-                self.insert_node_at(cursor, chunk, userlen);
+                self.insert_node_at(cursor, chunk, userlen, true);
             }
 
             // TODO: Consider recursively calling insert_at_iter() here instead
             // of making a whole new node for the remaining content.
             if let Some(end_items) = end_items {
-                self.insert_node_at(cursor, end_items, end_usercount);
+                // Passing false to indicate we don't want the cursor updated
+                // after this - it should remain at the end of the newly
+                // inserted content, which is *before* this end bit.
+                self.insert_node_at(cursor, end_items, end_usercount, false);
             }
         }
     }
@@ -718,9 +788,10 @@ impl<C: ListConfig> SkipList<C> {
     /// If the deleted content occurs at the start of a node, the cursor passed
     /// here must point to the end of the previous node, not the start of the
     /// current node.
-    unsafe fn del_at_iter(&mut self, cursor: &mut Cursor<C>, mut item_idx: usize, mut num_deleted_items: usize) {
+    unsafe fn del_at_iter(&mut self, cursor: &mut Cursor<C>, mut num_deleted_items: usize) {
         if num_deleted_items == 0 { return; }
 
+        let mut item_idx = cursor.local_index;
         let mut e = cursor.here_ptr();
         while num_deleted_items > 0 {
             if item_idx == (*e).num_items as usize {
@@ -792,12 +863,11 @@ impl<C: ListConfig> SkipList<C> {
         if removed_items == 0 && inserted_content.len() == 0 { return; }
 
         // For validation. This is where the cursor should end up.
-        // let expected_final_position = start_userpos + inserted_content.len() - removed_items;
+        let advanced_by = inserted_content.len();
 
         start_userpos = min(start_userpos, self.get_userlen());
 
-        let mut cursor = self.iter_at_userpos(start_userpos);
-        let (mut index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
+        let (mut cursor, offset) = self.iter_at_userpos(start_userpos);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
         // Replace as many items from removed_items as we can with inserted_content.
@@ -807,12 +877,13 @@ impl<C: ListConfig> SkipList<C> {
 
             while replaced_items > 0 {
                 let mut e = cursor.here_ptr();
-                if index == (*e).num_items as usize {
+                if cursor.local_index == (*e).num_items as usize {
                     // Move to the next item.
                     e = cursor.advance_node();
                     if e.is_null() { panic!("Cannot replace past the end of the list"); }
-                    index = 0;
                 }
+
+                let index = cursor.local_index;
 
                 let e_num_items = (*e).num_items as usize;
                 let replaced_items_here = min(replaced_items, e_num_items - index);
@@ -834,7 +905,7 @@ impl<C: ListConfig> SkipList<C> {
                 replaced_items -= replaced_items_here;
                 // We'll hop to the next Node at the start of the next loop
                 // iteration if needed.
-                index += replaced_items_here;
+                cursor.local_index += replaced_items_here;
 
                 for i in 0..self.head.height as usize {
                     cursor.entries[i].skip_usersize += new_usersize;
@@ -847,28 +918,33 @@ impl<C: ListConfig> SkipList<C> {
             if inserted_content.len() > 0 {
                 // Insert!
                 debug_assert!(removed_items == 0);
-                self.insert_at_iter(&mut cursor, index, inserted_content);
+                self.insert_at_iter(&mut cursor, inserted_content);
             } else if removed_items > 0 {
-                self.del_at_iter(&mut cursor, index, removed_items);
+                self.del_at_iter(&mut cursor, removed_items);
             }
         }
 
         // TODO: Assert that the iterator is after replaced content.
-        // #[cfg(debug_assertions)] {
-        //     let c2 = self.iter_at_userpos(expected_final_position);
-        //     if &cursor != &c2 { panic!("Invalid cursor after replace"); }
-        // }
+        #[cfg(debug_assertions)] {
+            let (mut c2, _) = self.iter_at_userpos(start_userpos);
+            c2.advance_by_items(advanced_by, self.head.height);
+            if &cursor != &c2 { panic!("Invalid cursor after replace"); }
+        }
     }
 
     pub fn insert_at(&mut self, mut userpos: usize, contents: &[C::Item]) {
         if contents.len() == 0 { return; }
         
         userpos = min(userpos, self.get_userlen());
-        let mut cursor = self.iter_at_userpos(userpos);
-        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
+        let (mut cursor, offset) = self.iter_at_userpos(userpos);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
-        unsafe { self.insert_at_iter(&mut cursor, index, contents); }
-        // TODO: Assert that the iterator now points after removed content.
+        unsafe { self.insert_at_iter(&mut cursor, contents); }
+
+        #[cfg(debug_assertions)] {
+            let (mut c2, _) = self.iter_at_userpos(userpos);
+            c2.advance_by_items(contents.len(), self.head.height);
+            if &cursor != &c2 { panic!("Invalid cursor after insert"); }
+        }
     }
 
     pub fn del_at(&mut self, mut userpos: usize, num_items: usize) {
@@ -877,12 +953,15 @@ impl<C: ListConfig> SkipList<C> {
         // num_items = min(length, self.num_chars() - pos);
         if num_items == 0 { return; }
 
-        let mut cursor = self.iter_at_userpos(userpos);
-        let (index, offset) = unsafe { &*cursor.here_ptr() }.get_iter_idx(cursor.entries[0].skip_usersize, false);
+        let (mut cursor, offset) = self.iter_at_userpos(userpos);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
-        unsafe { self.del_at_iter(&mut cursor, index, num_items); }
-        // TODO: Assert that the iterator remains where it was.
+        unsafe { self.del_at_iter(&mut cursor, num_items); }
+
+        #[cfg(debug_assertions)] {
+            let (c2, _) = self.iter_at_userpos(userpos);
+            if &cursor != &c2 { panic!("Invalid cursor after delete"); }
+        }
     }
 }
 
