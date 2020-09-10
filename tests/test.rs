@@ -10,8 +10,6 @@ mod test {
     extern crate rand;
     use self::rand::Rng;
 
-    use std::cmp::min;
-
     use std::fmt::Debug;
 
     // This config makes all items take up the same amount of space.
@@ -214,8 +212,6 @@ mod test {
     }
 
     fn vec_replace<C: ListConfig>(list: &mut Vec<C::Item>, target_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) {
-        let item_pos = vec_find_userpos::<C>(list, target_userpos);
-
         vec_delete_at::<C>(list, target_userpos, removed_items);
         vec_insert_at::<C>(list, target_userpos, inserted_content);
     }
@@ -223,46 +219,64 @@ mod test {
 
     use self::rand::{SeedableRng, rngs::SmallRng};
 
+    fn gen_random_data<C: ListConfig>(max_len: usize, rng: &mut SmallRng, gen_item: fn(r: &mut SmallRng) -> C::Item) -> Vec::<C::Item> {
+        let mut content = Vec::<C::Item>::new();
+        // Sometimes generate strings longer than a single node to stress everything.
+        for _ in 0..rng.gen_range(0, max_len) { // This should bias toward smaller inserts.
+            content.push(gen_item(rng));
+        }
+
+        content
+    }
+
     fn random_edits<C: ListConfig>(gen_item: fn(r: &mut SmallRng) -> C::Item) where C::Item: PartialEq + Debug {
         let mut list = SkipList::<C>::new();
         let mut vec = Vec::<<C as ListConfig>::Item>::new();
 
         let mut rng = SmallRng::seed_from_u64(321);
 
-        for _ in 0..1000 {
+        for i in 0..1000 {
             check(&list, vec.as_slice());
 
             let itemlen = vec.len();
             let userlen = C::userlen_of_slice(vec.as_slice());
             // let len = vec.chars().count();
 
-            // println!("i {}: {}", i, len);
+            println!("i {}: items: {} / user: {}", i, itemlen, userlen);
             
-            if itemlen == 0 || (itemlen < 1000 && rng.gen::<f32>() < 0.5) {
+            if itemlen == 0 || (itemlen < 1000 && rng.gen::<f32>() < 0.35) {
                 // Insert.
-                let ins_itempos = rng.gen_range(0, itemlen+1);
-                let ins_userpos = C::userlen_of_slice(&vec[0..ins_itempos]);
+                let itempos = rng.gen_range(0, itemlen+1);
+                let userpos = C::userlen_of_slice(&vec[0..itempos]);
                 if itemlen > 0 { assert!(userlen > 0); }
                 
-                let mut content = Vec::<C::Item>::new();
-                // Sometimes generate strings longer than a single node to stress everything.
-                for _ in 0..rng.gen_range(0, 500) { // This should bias toward smaller inserts.
-                    content.push(gen_item(&mut rng));
-                }
+                let content = gen_random_data::<C>(500, &mut rng, gen_item);
 
-                list.insert_at(ins_userpos, content.as_slice());
-                vec_insert_at::<C>(&mut vec, ins_userpos, content.as_slice());
-            } else {
+                println!("insert {} content", content.len());
+                list.insert_at(userpos, content.as_slice());
+                vec_insert_at::<C>(&mut vec, userpos, content.as_slice());
+            } else if itemlen > 1200 || rng.gen::<f32>() < 0.5 {
                 // Delete
-                let del_itempos = rng.gen_range(0, itemlen+1); // Sometimes delete nothing at the end.
-                let del_userpos = C::userlen_of_slice(&vec[0..del_itempos]);
+                let itempos = rng.gen_range(0, itemlen+1); // Sometimes delete nothing at the end.
+                let userpos = C::userlen_of_slice(&vec[0..itempos]);
 
                 // Again some biasing here would be good.
-                let num_deleted_items = if vec.len() == del_itempos { 0 }
-                else { rng.gen_range(0, std::cmp::min(30, vec.len() - del_itempos)) };
+                let num_deleted_items = std::cmp::min(rng.gen_range(0, 30), vec.len() - itempos);
 
-                list.del_at(del_userpos, num_deleted_items);
-                vec_delete_at::<C>(&mut vec, del_userpos, num_deleted_items);
+                println!("delete {} items", num_deleted_items);
+                list.del_at(userpos, num_deleted_items);
+                vec_delete_at::<C>(&mut vec, userpos, num_deleted_items);
+            } else {
+                // Replace something!
+                let itempos = rng.gen_range(0, itemlen+1);
+                let userpos = C::userlen_of_slice(&vec[0..itempos]);
+
+                let num_deleted_items = std::cmp::min(rng.gen_range(0, 30), vec.len() - itempos);
+                let ins_content = gen_random_data::<C>(250, &mut rng, gen_item);
+
+                println!("replace {} with {} items", num_deleted_items, ins_content.len());
+                list.replace_at(userpos, num_deleted_items, ins_content.as_slice());
+                vec_replace::<C>(&mut vec, userpos, num_deleted_items, ins_content.as_slice());
             }
         }
     }

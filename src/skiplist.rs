@@ -23,20 +23,20 @@ use rand::rngs::SmallRng;
 const BIAS: u8 = 100; // out of 256.
 
 /// The number of items in each node. Must fit in a u8 thanks to Node.
-#[cfg(test)]
+#[cfg(debug_assertions)]
 const NODE_NUM_ITEMS: usize = 2;
 
-#[cfg(not(test))]
+#[cfg(not(debug_assertions))]
 const NODE_NUM_ITEMS: usize = 100;
 
 /// Rope operations will move to linear time after NODE_STR_SIZE * 2 ^
 /// MAX_HEIGHT length. (With a smaller constant the higher this is). On the flip
 /// side, cursors grow linearly with this number; so smaller is marginally
 /// better when the contents are smaller.
-#[cfg(test)]
+#[cfg(debug_assertions)]
 const MAX_HEIGHT: usize = 2;
 
-#[cfg(not(test))]
+#[cfg(not(debug_assertions))]
 const MAX_HEIGHT: usize = 10;
 
 
@@ -891,15 +891,17 @@ impl<C: ListConfig> SkipList<C> {
                 let old_items = &mut (*e).items[index..index + replaced_items_here];
                 let new_items = &inserted_content[0..replaced_items_here];
 
-                // Replace the items themselves.
-                old_items.copy_from_slice(new_items);
-
-                // And bookkeeping. Bookkeeping forever.
                 let new_usersize = C::userlen_of_slice(new_items);
                 let usersize_delta = new_usersize as isize - C::userlen_of_slice(old_items) as isize;
+
+                // Replace the items themselves. Everything else is commentary.
+                old_items.copy_from_slice(new_items);
+
                 if usersize_delta != 0 {
                     cursor.update_offsets(self.head.height as usize, usersize_delta)
                 }
+                // I hate this.
+                self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
 
                 inserted_content = &inserted_content[replaced_items_here..];
                 replaced_items -= replaced_items_here;
@@ -925,7 +927,7 @@ impl<C: ListConfig> SkipList<C> {
         }
 
         // TODO: Assert that the iterator is after replaced content.
-        #[cfg(debug_assertions)] {
+        if cfg!(debug_assertions) {
             let (mut c2, _) = self.iter_at_userpos(start_userpos);
             c2.advance_by_items(advanced_by, self.head.height);
             if &cursor != &c2 { panic!("Invalid cursor after replace"); }
@@ -940,7 +942,7 @@ impl<C: ListConfig> SkipList<C> {
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
         unsafe { self.insert_at_iter(&mut cursor, contents); }
 
-        #[cfg(debug_assertions)] {
+        if cfg!(debug_assertions) {
             let (mut c2, _) = self.iter_at_userpos(userpos);
             c2.advance_by_items(contents.len(), self.head.height);
             if &cursor != &c2 { panic!("Invalid cursor after insert"); }
@@ -958,7 +960,7 @@ impl<C: ListConfig> SkipList<C> {
 
         unsafe { self.del_at_iter(&mut cursor, num_items); }
 
-        #[cfg(debug_assertions)] {
+        if cfg!(debug_assertions) {
             let (c2, _) = self.iter_at_userpos(userpos);
             if &cursor != &c2 { panic!("Invalid cursor after delete"); }
         }
