@@ -16,6 +16,8 @@ use std::{mem, ptr};
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::min;
 
+use std::fmt;
+
 use rand::{RngCore, Rng, SeedableRng};
 use rand::rngs::SmallRng;
 
@@ -56,6 +58,10 @@ pub trait ListConfig {
         items.iter().fold(0, |acc, item| {
             acc + Self::get_usersize(item)
         })
+    }
+
+    fn split_item(_item: &Self::Item, _at: usize) -> (Self::Item, Self::Item) {
+        unimplemented!("Cannot insert in the middle of an item - split_item is not defined in trait");
     }
 
     // type RngType: rand::RngCore = rand::rngs::SmallRng;
@@ -296,7 +302,7 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 ///   the write function is invalid.
 /// - While a cursor is held the SkipList struct should be considered pinned and
 ///   must not be moved or deleted
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 struct Cursor<C: ListConfig> {
     // TODO: Add a phantom lifetime reference to the skip list root for safety.
 
@@ -381,6 +387,13 @@ impl<C: ListConfig> Cursor<C> {
         for _ in 0..num { self.advance_item(height); }
     }
 
+    fn move_to_item_start(&mut self, height: u8, offset: usize) {
+        for entry in &mut self.entries[0..height as usize] {
+            entry.skip_usersize -= offset;
+        }
+        self.userpos -= offset;
+    }
+
     unsafe fn current_item(&mut self) -> &C::Item {
         &(*self.here_ptr()).items[self.local_index]
     }
@@ -409,6 +422,15 @@ impl<C: ListConfig> PartialEq for Cursor<C> {
     }
 }
 impl<C: ListConfig> Eq for Cursor<C> {}
+
+impl<C: ListConfig> fmt::Debug for Cursor<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cursor")
+            .field("userpos", &self.userpos)
+            .field("local_index", &self.local_index)
+            .finish()
+    }
+}
 
 impl<C: ListConfig> SkipList<C> {
     pub fn new() -> Self {
@@ -917,6 +939,15 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
+    fn dbg_check_cursor_at(&self, cursor: &Cursor<C>, userpos: usize, plus_items: usize) {
+        if cfg!(debug_assertions) {
+            // let (mut c2, _) = self.iter_at_userpos(userpos);
+            let (mut c2, _) = self.iter_at_userpos(userpos);
+            c2.advance_by_items(plus_items, self.head.height);
+            assert_eq!(cursor, &c2);
+        }
+    }
+
     pub fn replace_at(&mut self, mut start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) {
         start_userpos = min(start_userpos, self.get_userlen());
 
@@ -937,14 +968,31 @@ impl<C: ListConfig> SkipList<C> {
         
         userpos = min(userpos, self.get_userlen());
         let (mut cursor, offset) = self.iter_at_userpos(userpos);
-        assert_eq!(offset, 0, "Splitting nodes not yet supported");
-        unsafe { self.insert_at_iter(&mut cursor, contents); }
 
-        if cfg!(debug_assertions) {
-            let (mut c2, _) = self.iter_at_userpos(userpos);
-            c2.advance_by_items(contents.len(), self.head.height);
-            if &cursor != &c2 { panic!("Invalid cursor after insert"); }
+        unsafe {
+            if offset == 0 {
+                self.insert_at_iter(&mut cursor, contents);
+
+                self.dbg_check_cursor_at(&cursor, userpos, contents.len());
+            } else {
+                let current_item = cursor.current_item();
+                let (start, end) = C::split_item(current_item, offset);
+                // Move the cursor back to the start of the item we're
+                // splitting.
+                cursor.move_to_item_start(self.head.height, offset);
+                // This feels pretty inefficient; but its probably fine.
+                self.replace_at_iter(&mut cursor, 1, &[start]);
+                self.insert_at_iter(&mut cursor, contents);
+
+                // There's no clean way to keep the cursor steady for the final
+                // insert. We'll just make sure the cursor is in the right
+                // position before that call for now.
+                self.dbg_check_cursor_at(&cursor, userpos, contents.len());
+
+                self.insert_at_iter(&mut cursor, &[end]);
+            }
         }
+
     }
 
     pub fn del_at(&mut self, mut userpos: usize, num_items: usize) {

@@ -26,6 +26,10 @@ mod test {
         fn get_usersize(item: &u8) -> usize {
             *item as usize
         }
+
+        fn split_item(item: &u8, at: usize) -> (u8, u8) {
+            (at as u8, item - at as u8)
+        }
     }
 
     fn check<'a, C: ListConfig>(list: &SkipList<C>, expected: &'a [C::Item])
@@ -100,6 +104,14 @@ mod test {
 
         list.insert_at(5, &[4,4,4]);
         check(&list, &[2,2,2,1,1,4,4,4,1,3,3,3]);
+    }
+
+    #[test]
+    fn insert_between() {
+        let mut list = SkipList::<TestConfigSized>::new_from_slice(&[5,2]);
+        
+        list.insert_at(1, &[10]);
+        check(&list, &[1,10,4,2]);
     }
 
     #[test]
