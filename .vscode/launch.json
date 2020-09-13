@@ -12,8 +12,7 @@
                 "args": [
                     "test",
                     "--no-run",
-                    "--lib",
-                    "--package=skiplistrs"
+                    "--lib"
                 ],
                 "filter": {
                     "name": "skiplistrs",
@@ -31,15 +30,14 @@
                 "args": [
                     "test",
                     "--no-run",
-                    "--test=test",
-                    "--package=skiplistrs"
+                    "--test=test"
                 ],
                 "filter": {
                     "name": "test",
                     "kind": "test"
                 }
             },
-            "args": ["--nocapture", "nonuniform"],
+            "args": ["--nocapture", "really"],
             "cwd": "${workspaceFolder}"
         }
     ]

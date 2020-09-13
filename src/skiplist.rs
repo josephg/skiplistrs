@@ -52,7 +52,7 @@ pub struct ItemMarker<'a, C: ListConfig> {
 
 /// The whole list is configured through a single generic trait parameter
 pub trait ListConfig {
-    type Item: Default + Copy;
+    type Item: Default + Copy + PartialEq;
 
     /// Applications which have custom sizes (or do their own
     /// run-length-encoding) can define their own size function for items. When
@@ -70,7 +70,7 @@ pub trait ListConfig {
         unimplemented!("Cannot insert in the middle of an item - split_item is not defined in trait");
     }
 
-    fn notify(&mut self, _item: &Self::Item, _at_marker: ItemMarker<Self>) where Self: Sized {
+    fn notify(&mut self, _items: &[Self::Item], _at_marker: ItemMarker<Self>) where Self: Sized {
     }
 
     // type RngType: rand::RngCore = rand::rngs::SmallRng;
@@ -138,6 +138,13 @@ struct Node<C: ListConfig> {
 
     /// Height of nexts array.
     height: u8,
+
+    /// With the heads array as is, we have no way to go from a marker back to a
+    /// cursor (which is required to insert at that location in the list). For
+    /// that we need to be able to figure out at each level of the nexts
+    /// pointers which object points to us, and the offset from that element to
+    /// the current element. Anyway, for markers to work we need this.
+    parent: *mut Node<C>,
 
     // #[repr(align(std::align_of::<SkipEntry>()))]
     
@@ -240,6 +247,7 @@ impl<C: ListConfig> Node<C> {
                 items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
                 height: height,
+                parent: ptr::null_mut(),
                 nexts: [],
             };
 
@@ -451,6 +459,7 @@ impl<C: ListConfig> SkipList<C> {
                 items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
                 height: 1, // Stores max height of list nodes
+                parent: ptr::null_mut(),
                 nexts: [],
             },
             _nexts_padding: [SkipEntry::new_null(); MAX_HEIGHT],
@@ -464,7 +473,12 @@ impl<C: ListConfig> SkipList<C> {
     fn get_rng(&mut self) -> &mut SmallRng {
         // I'm sure there's a nicer way to implement this.
         if self.rng.is_none() {
-            self.rng = Some(SmallRng::from_entropy());
+            // We'll use a stable RNG in debug mode so the tests are stable.
+            if cfg!(debug_assertions) {
+                self.init_rng_from_seed(123);
+            } else {
+                self.rng = Some(SmallRng::from_entropy());
+            }
         }
         self.rng.as_mut().unwrap()
     }
@@ -500,12 +514,15 @@ impl<C: ListConfig> SkipList<C> {
             assert!(self.head.height >= 1);
             assert!(self.head.height <= MAX_HEIGHT_U8);
 
+            let head_ptr = &self.head as *const _ as *mut _;
             // let skip_over = self.get_top_entry();
             // println!("Skip over skip chars {}, num bytes {}", skip_over.skip_items, self.num_bytes);
 
+            let mut prev: [*const Node<C>; MAX_HEIGHT] = [ptr::null(); MAX_HEIGHT];
+
             let mut iter = [SkipEntry {
                 // Bleh.
-                node: &self.head as *const Node<C> as *mut Node<C>,
+                node: head_ptr,
                 // The skips will store the total distance travelled since the
                 // start of this traversal at each height. All the entries above
                 // head.height are ignored though.
@@ -526,12 +543,22 @@ impl<C: ListConfig> SkipList<C> {
                 let local_count = C::userlen_of_slice(&n.items[0..n.num_items as usize]);
                 assert_eq!(local_count, n.get_userlen());
 
-                // assert_eq!(n.as_str().chars().count(), n.num_chars());
+                let expect_parent = if is_head {
+                    ptr::null() // The head's parent is null
+                } else if n.height == MAX_HEIGHT_U8 {
+                    &self.head as *const _ // Max height nodes point back to head
+                } else {
+                    prev[n.height as usize]
+                };
+
+                assert_eq!(n.parent as *const _, expect_parent, "invalid parent");
+                
                 for (i, entry) in iter[0..n.height as usize].iter_mut().enumerate() {
-                    assert_eq!(entry.node as *const Node<C>, n as *const Node<C>);
+                    assert_eq!(entry.node as *const _, n as *const _);
                     assert_eq!(entry.skip_usersize, num_usercount);
 
                     // println!("replacing entry {:?} with {:?}", entry, n.nexts()[i].node);
+                    prev[i] = n;
                     entry.node = n.nexts()[i].node;
                     entry.skip_usersize += n.nexts()[i].skip_usersize;
                 }
@@ -642,13 +669,15 @@ impl<C: ListConfig> SkipList<C> {
         debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
         assert!(contents.len() <= NODE_NUM_ITEMS);
 
-        let new_node = Node::alloc(self.get_rng());
-        (*new_node).num_items = contents.len() as u8;
-        (*new_node).items[..contents.len()].copy_from_slice(contents);
-        let new_height = (*new_node).height;
+        let new_node_ptr = Node::alloc(self.get_rng());
+        let new_node = &mut *new_node_ptr;
+        new_node.num_items = contents.len() as u8;
+        new_node.items[..contents.len()].copy_from_slice(contents);
+
+        let new_height = new_node.height;
+        let new_height_usize = new_height as usize;
 
         let mut head_height = self.head.height as usize;
-        let new_height_usize = new_height as usize;
         while head_height < new_height_usize {
             // This seems weird given we're about to overwrite these values
             // below. What we're doing is retroactively setting up the cursor
@@ -664,9 +693,13 @@ impl<C: ListConfig> SkipList<C> {
             self.head.height += 1;
         }
 
+        new_node.parent = if new_height_usize == MAX_HEIGHT {
+            &self.head as *const _ as *mut _
+        } else { cursor.entries[new_height_usize].node };
+
         for i in 0..new_height_usize {
             let prev_skip = &mut (*cursor.entries[i].node).nexts_mut()[i];
-            let new_nexts = (*new_node).nexts_mut();
+            let new_nexts = new_node.nexts_mut();
 
             // The new node points to the successor (or null)
             new_nexts[i] = SkipEntry {
@@ -676,14 +709,14 @@ impl<C: ListConfig> SkipList<C> {
 
             // The previous node points to the new node
             *prev_skip = SkipEntry {
-                node: new_node,
+                node: new_node_ptr,
                 skip_usersize: cursor.entries[i].skip_usersize
             };
 
             // Move the iterator to the end of the newly inserted node.
             if move_cursor {
                 cursor.entries[i] = SkipEntry {
-                    node: new_node,
+                    node: new_node_ptr,
                     skip_usersize: new_userlen
                 };
             }
@@ -693,6 +726,17 @@ impl<C: ListConfig> SkipList<C> {
             (*cursor.entries[i].node).nexts_mut()[i].skip_usersize += new_userlen;
             if move_cursor {
                 cursor.entries[i].skip_usersize += new_userlen;
+            }
+        }
+
+        // Update parents.
+        if new_height_usize > 1 {
+            let mut n = new_node_ptr;
+            loop {
+                n = (*n).nexts_mut()[new_height_usize - 2].node;
+                if n.is_null() || (*n).height >= new_height { break; }
+
+                (*n).parent = new_node_ptr;
             }
         }
         
@@ -888,6 +932,18 @@ impl<C: ListConfig> SkipList<C> {
 
                 self.num_items -= (*e).num_items as usize;
                 self.num_usercount -= removed_userlen;
+
+                // Update parents.
+                if height > 1 {
+                    let mut n = e;
+                    let new_parent = cursor.entries[height - 1].node;
+                    loop {
+                        n = (*n).nexts_mut()[height - 2].node;
+                        if n.is_null() || (*n).height >= height as u8 { break; }
+
+                        (*n).parent = new_parent;
+                    }
+                }
 
                 Node::free(e);
                 e = next;
