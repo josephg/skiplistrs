@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod test {
 
-    extern crate skiplistrs;
-    use self::skiplistrs::*;
+    extern crate skiplist;
+    use self::skiplist::*;
 
     extern crate rand;
     use self::rand::Rng;

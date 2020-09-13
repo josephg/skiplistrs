@@ -15,6 +15,7 @@
 use std::{mem, ptr};
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::min;
+use std::marker::PhantomData;
 
 use std::fmt;
 
@@ -44,6 +45,11 @@ const MAX_HEIGHT: usize = 10;
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
+pub struct ItemMarker<'a, C: ListConfig> {
+    ptr: *mut Node<C>,
+    _phanton: PhantomData<&'a SkipList<C>>
+}
+
 /// The whole list is configured through a single generic trait parameter
 pub trait ListConfig {
     type Item: Default + Copy;
@@ -62,6 +68,9 @@ pub trait ListConfig {
 
     fn split_item(_item: &Self::Item, _at: usize) -> (Self::Item, Self::Item) {
         unimplemented!("Cannot insert in the middle of an item - split_item is not defined in trait");
+    }
+
+    fn notify(&mut self, _item: &Self::Item, _at_marker: ItemMarker<Self>) where Self: Sized {
     }
 
     // type RngType: rand::RngCore = rand::rngs::SmallRng;
@@ -182,7 +191,7 @@ pub struct SkipList<C: ListConfig> {
     /// during debugging. I'm still not sure how the type of this should be
     /// specified. Should it be a generic parameter? Box<dyn *>?
     /// ??
-    rng: SmallRng,
+    rng: Option<SmallRng>,
 
     /// The first node is inline. The height is 1 more than the max height we've
     /// ever used. The highest next entry points to {null, total usersize}.
@@ -437,7 +446,7 @@ impl<C: ListConfig> SkipList<C> {
         SkipList::<C> {
             num_items: 0,
             num_usercount: 0,
-            rng: SmallRng::seed_from_u64(123),
+            rng: None,
             head: Node {
                 items: [C::Item::default(); NODE_NUM_ITEMS],
                 num_items: 0,
@@ -446,6 +455,18 @@ impl<C: ListConfig> SkipList<C> {
             },
             _nexts_padding: [SkipEntry::new_null(); MAX_HEIGHT],
         }
+    }
+
+    pub fn init_rng_from_seed(&mut self, seed: u64) {
+        self.rng = Some(SmallRng::seed_from_u64(seed));
+    }
+
+    fn get_rng(&mut self) -> &mut SmallRng {
+        // I'm sure there's a nicer way to implement this.
+        if self.rng.is_none() {
+            self.rng = Some(SmallRng::from_entropy());
+        }
+        self.rng.as_mut().unwrap()
     }
 
     pub fn new_from_slice(s: &[C::Item]) -> Self {
@@ -621,7 +642,7 @@ impl<C: ListConfig> SkipList<C> {
         debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
         assert!(contents.len() <= NODE_NUM_ITEMS);
 
-        let new_node = Node::alloc(&mut self.rng);
+        let new_node = Node::alloc(self.get_rng());
         (*new_node).num_items = contents.len() as u8;
         (*new_node).items[..contents.len()].copy_from_slice(contents);
         let new_height = (*new_node).height;
