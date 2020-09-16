@@ -52,7 +52,7 @@ pub struct ItemMarker<'a, C: ListConfig> {
 
 /// The whole list is configured through a single generic trait parameter
 pub trait ListConfig {
-    type Item: Default + Copy + PartialEq;
+    type Item: Default + Copy;
 
     /// Applications which have custom sizes (or do their own
     /// run-length-encoding) can define their own size function for items. When
@@ -70,15 +70,16 @@ pub trait ListConfig {
         unimplemented!("Cannot insert in the middle of an item - split_item is not defined in trait");
     }
 
-    fn notify(&mut self, _items: &[Self::Item], _at_marker: ItemMarker<Self>) where Self: Sized {
-    }
-
-    // type RngType: rand::RngCore = rand::rngs::SmallRng;
-    // fn get_rng() -> Self::RngType {
-    //     use rand::SeedableRng;
-    //     // rand::rngs::SmallRng::from_seed(SeedableRng::seed_from_u64(10))
-    //     rand::rngs::SmallRng::from_entropy()
+    // fn notify(&mut self, _items: &[Self::Item], _at_marker: ItemMarker<Self>) where Self: Sized {
     // }
+    
+}
+
+pub trait Queryable {
+    type Query;
+
+    // Returns Some(offset) into the item if its contained. Otherwise None.
+    fn contains_item(&self, query: &Self::Query) -> Option<usize>;
 }
 
 /// This represents a single entry in either the nexts pointers list or in an
@@ -106,6 +107,7 @@ impl<C: ListConfig> SkipEntry<C> {
         SkipEntry { node: ptr::null_mut(), skip_usersize: 0 }
     }
 }
+
 
 
 /// The node structure is designed in a very fancy way which would be more at
@@ -320,7 +322,7 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 /// - While a cursor is held the SkipList struct should be considered pinned and
 ///   must not be moved or deleted
 #[derive(Copy, Clone)]
-struct Cursor<C: ListConfig> {
+pub struct Cursor<C: ListConfig> {
     // TODO: Add a phantom lifetime reference to the skip list root for safety.
 
 
@@ -505,6 +507,10 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
+    fn is_head(&self, node: *const Node<C>) -> bool {
+        node as *const _ == &self.head as *const _
+    }
+
     /// Walk the list and validate internal constraints. This is used for
     /// testing the structure itself, and should generally not be called by
     /// users.
@@ -534,8 +540,7 @@ impl<C: ListConfig> SkipList<C> {
 
             for n in self.iter() {
                 // println!("visiting {:?}", n.as_str());
-                let is_head = n as *const _ == &self.head as *const _;
-                if !is_head { assert!(n.num_items > 0); }
+                if !self.is_head(n) { assert!(n.num_items > 0); }
                 assert!(n.height <= MAX_HEIGHT_U8);
                 assert!(n.num_items as usize <= NODE_NUM_ITEMS);
 
@@ -543,7 +548,7 @@ impl<C: ListConfig> SkipList<C> {
                 let local_count = C::userlen_of_slice(&n.items[0..n.num_items as usize]);
                 assert_eq!(local_count, n.get_userlen());
 
-                let expect_parent = if is_head {
+                let expect_parent = if self.is_head(n) {
                     ptr::null() // The head's parent is null
                 } else if n.height == MAX_HEIGHT_U8 {
                     &self.head as *const _ // Max height nodes point back to head
@@ -565,6 +570,19 @@ impl<C: ListConfig> SkipList<C> {
 
                 num_items += n.num_items as usize;
                 num_usercount += n.get_userlen();
+
+                // Check the value returned by the iterator functions matches.
+                let (mut normal_iter, local_offset) = self.iter_at_userpos(num_usercount);
+                assert_eq!(local_offset, 0);
+                
+                // Dirty hack. If n has 0-sized elements at the end, the normal
+                // cursor won't be at the end...
+                while normal_iter.here_ptr() != n as *const _ as *mut _ {
+                    normal_iter.advance_node();
+                }
+                normal_iter.local_index = n.num_items as usize;
+                let node_iter = unsafe { self.iter_at_node(n, n.get_userlen(), n.num_items as usize) };
+                assert_eq!(normal_iter, node_iter);
             }
 
             for entry in iter[0..self.head.height as usize].iter() {
@@ -658,6 +676,75 @@ impl<C: ListConfig> SkipList<C> {
         cursor.local_index = index;
 
         (cursor, offset)
+    }
+
+    unsafe fn iter_at_node(&self, n: *const Node<C>, mut offset: usize, local_index: usize) -> Cursor<C> {
+        let mut n = n as *mut Node<C>; // We don't mutate, but we need a mut ptr.
+
+        let mut cursor = Cursor {
+            userpos: 0, // We'll set this later.
+            local_index: local_index,
+            entries: [SkipEntry {
+                node: &self.head as *const _ as *mut _,
+                skip_usersize: usize::MAX
+            }; MAX_HEIGHT],
+        };
+
+        let mut h = 0;
+        loop {
+            while h < (*n).height as usize {
+                cursor.entries[h] = SkipEntry {
+                    node: n,
+                    skip_usersize: offset
+                };
+
+                h += 1;
+            }
+
+            let parent = (*n).parent;
+            // Reached the head.
+            if parent.is_null() { break; }
+
+            // If we're the same height as the parent its fine.
+            debug_assert!((*parent).height as usize > h
+                || (self.is_head(parent) && (*parent).height as usize == h));
+
+            // Walk from parent back to n, figuring out the offset.
+            let mut c = parent;
+            let walk_height = (*parent).height as usize - 2;
+            while c != n {
+                let elem = (*c).nexts()[walk_height];
+                offset += elem.skip_usersize;
+                c = elem.node;
+            }
+
+            n = parent;
+        }
+
+        cursor.userpos = offset;
+        cursor
+    }
+
+    pub fn iter_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
+        // The marker gives us a pointer into a node. Find the item.
+        unsafe {
+            let n = marker.ptr;
+
+            let mut offset: usize = 0;
+            let mut local_index = None;
+            for (i, item) in (*n).content_slice().iter().enumerate() {
+                if let Some(item_offset) = item.contains_item(query) {
+                    offset += item_offset;
+                    local_index = Some(i);
+                    break;
+                } else {
+                    offset += C::get_usersize(item);
+                }
+            }
+
+            let local_index = local_index.expect("Invalid marker - item not found in node");
+            self.iter_at_node(n, offset, local_index)
+        }
     }
 
     // Internal fn to create a new node at the specified iterator filled with
