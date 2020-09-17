@@ -27,7 +27,7 @@ const BIAS: u8 = 100; // out of 256.
 
 /// The number of items in each node. Must fit in a u8 thanks to Node.
 #[cfg(debug_assertions)]
-const NODE_NUM_ITEMS: usize = 2;
+const NODE_NUM_ITEMS: usize = 10;
 
 #[cfg(not(debug_assertions))]
 const NODE_NUM_ITEMS: usize = 100;
@@ -37,7 +37,7 @@ const NODE_NUM_ITEMS: usize = 100;
 /// side, cursors grow linearly with this number; so smaller is marginally
 /// better when the contents are smaller.
 #[cfg(debug_assertions)]
-const MAX_HEIGHT: usize = 2;
+const MAX_HEIGHT: usize = 5;
 
 #[cfg(not(debug_assertions))]
 const MAX_HEIGHT: usize = 10;
@@ -52,7 +52,7 @@ pub struct ItemMarker<'a, C: ListConfig> {
 
 /// The whole list is configured through a single generic trait parameter
 pub trait ListConfig {
-    type Item: Default + Copy;
+    type Item: Default + Copy; //+ std::fmt::Debug;
 
     /// Applications which have custom sizes (or do their own
     /// run-length-encoding) can define their own size function for items. When
@@ -517,6 +517,7 @@ impl<C: ListConfig> SkipList<C> {
     pub fn check(&self) {
         // #[cfg(test)]
         {
+            // self.print();
             assert!(self.head.height >= 1);
             assert!(self.head.height <= MAX_HEIGHT_U8);
 
@@ -538,7 +539,7 @@ impl<C: ListConfig> SkipList<C> {
             let mut num_items = 0;
             let mut num_usercount = 0;
 
-            for n in self.iter() {
+            for (_i, n) in self.iter().enumerate() {
                 // println!("visiting {:?}", n.as_str());
                 if !self.is_head(n) { assert!(n.num_items > 0); }
                 assert!(n.height <= MAX_HEIGHT_U8);
@@ -550,11 +551,17 @@ impl<C: ListConfig> SkipList<C> {
 
                 let expect_parent = if self.is_head(n) {
                     ptr::null() // The head's parent is null
-                } else if n.height == MAX_HEIGHT_U8 {
+                } else if n.height == self.head.height {
                     &self.head as *const _ // Max height nodes point back to head
                 } else {
                     prev[n.height as usize]
                 };
+
+                // println!("visiting {} {:?}", i, n as *const _);
+                // dbg!(n as *const _);
+                // dbg!((n as *const _, (*n).height));
+                // dbg!(n.parent);
+                // dbg!(&self.head as *const _);
 
                 assert_eq!(n.parent as *const _, expect_parent, "invalid parent");
                 
@@ -711,7 +718,8 @@ impl<C: ListConfig> SkipList<C> {
 
             // Walk from parent back to n, figuring out the offset.
             let mut c = parent;
-            let walk_height = (*parent).height as usize - 2;
+            // let walk_height = (*parent).height as usize - 2;
+            let walk_height = (*n).height as usize - 1;
             while c != n {
                 let elem = (*c).nexts()[walk_height];
                 offset += elem.skip_usersize;
@@ -821,12 +829,16 @@ impl<C: ListConfig> SkipList<C> {
 
         // Update parents.
         if new_height_usize > 1 {
-            let mut n = new_node_ptr;
-            loop {
-                n = (*n).nexts_mut()[new_height_usize - 2].node;
-                if n.is_null() || (*n).height >= new_height { break; }
 
+            let mut n = new_node_ptr;
+            let mut skip_height = 0;
+
+            loop {
+                n = (*n).nexts_mut()[skip_height].node;
+                if n.is_null() || (*n).height >= new_height { break; }
+                
                 (*n).parent = new_node_ptr;
+                skip_height = usize::max(skip_height, (*n).height as usize - 1);
             }
         }
         
@@ -987,6 +999,8 @@ impl<C: ListConfig> SkipList<C> {
         let mut item_idx = cursor.local_index;
         let mut e = cursor.here_ptr();
         while num_deleted_items > 0 {
+            // self.print();
+            // if cfg!(debug_assertions) { self.check(); }
             if item_idx == (*e).num_items as usize {
                 let entry = (*e).first_skip_entry();
                 // End of current node. Skip to the start of the next one. We're
@@ -1030,7 +1044,9 @@ impl<C: ListConfig> SkipList<C> {
                 removed_userlen = (*e).get_userlen();
                 let next = (*e).first_skip_entry().node;
 
-                for i in 0..(*e).height as usize {
+                // println!("removing {:?} contents {:?} height {}", e, (*e).content_slice(), height);
+
+                for i in 0..height {
                     let s = &mut (*cursor.entries[i].node).nexts_mut()[i];
                     s.node = (*e).nexts_mut()[i].node;
                     s.skip_usersize += (*e).nexts()[i].skip_usersize - removed_userlen;
@@ -1042,11 +1058,42 @@ impl<C: ListConfig> SkipList<C> {
                 // Update parents.
                 if height > 1 {
                     let mut n = e;
-                    let new_parent = cursor.entries[height - 1].node;
-                    loop {
-                        n = (*n).nexts_mut()[height - 2].node;
-                        if n.is_null() || (*n).height >= height as u8 { break; }
+                    // let new_parent = cursor.entries[height - 1].node;
 
+                    // If you imagine this node as a big building, we need to
+                    // update the parent of all the nodes we cast a shadow over.
+                    // So, if our height is 3 and the next nodes have heights 1
+                    // and 2, they both need new parents.
+                    let mut parent_height = 1;
+                    let cursor_node = cursor.here_ptr();
+                    let cursor_node_height = (*cursor_node).height as usize;
+                    let mut new_parent = if height >= cursor_node_height {
+                        cursor.entries[parent_height].node
+                    } else {
+                        cursor_node
+                    };
+
+                    loop {
+                        // dbg!(skip_height);
+                        // dbg!((*n).height as usize);
+
+                        n = (*n).nexts_mut()[parent_height - 1].node;
+                        if n.is_null() || (*n).height >= height as u8 { break; }
+                        let n_height = (*n).height as usize;
+
+                        // dbg!((*n).content_slice());
+                        // dbg!((*n).height);
+                        
+                        assert_eq!((*n).parent, e);
+                        assert!(n_height >= parent_height - 1);
+
+                        if n_height > parent_height {
+                            parent_height = n_height;
+                            if n_height >= cursor_node_height {
+                                new_parent = cursor.entries[parent_height].node
+                            }
+                        }
+                        
                         (*n).parent = new_parent;
                     }
                 }
@@ -1061,6 +1108,8 @@ impl<C: ListConfig> SkipList<C> {
             }
 
             num_deleted_items -= removed_here;
+
+            // if cfg!(debug_assertions) { self.check(); }
         }
     }
 
@@ -1276,12 +1325,22 @@ impl<C: ListConfig> SkipList<C> where C::Item: std::fmt::Debug {
         }
         println!("");
 
+        use std::collections::HashMap;
+        let mut ptr_to_id = HashMap::new();
+        // ptr_to_id.insert(std::ptr::null(), usize::MAX);
         for (i, node) in self.iter().enumerate() {
             print!("{}:", i);
+            ptr_to_id.insert(node as *const _, i);
             for s in node.nexts() {
                 print!(" |{} ", s.skip_usersize);
             }
-            println!("      : {:?}", node.content_slice());
+            print!("      : {:?}", node.content_slice());
+            if let Some(id) = ptr_to_id.get(&(node.parent as *const _)) {
+                print!(" (parent: {})", id);
+            }
+            print!(" (pointer: {:?})", node as *const _);
+
+            println!();
         }
     }
 }
