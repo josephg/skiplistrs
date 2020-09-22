@@ -37,7 +37,7 @@
                     "kind": "test"
                 }
             },
-            "args": ["--nocapture", "really"],
+            "args": ["--nocapture", "insert_at_location"],
             "cwd": "${workspaceFolder}"
         }
     ]

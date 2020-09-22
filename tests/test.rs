@@ -33,7 +33,7 @@ mod test {
     }
 
     fn check<'a, C: ListConfig>(list: &SkipList<C>, expected: &'a [C::Item])
-        where C::Item: PartialEq + Debug
+        where C::Item: PartialEq + Debug + Copy
     {
         list.print();
         list.check();
@@ -205,7 +205,7 @@ mod test {
         item_pos
     }
 
-    fn vec_insert_at<C: ListConfig>(list: &mut Vec<C::Item>, target_userpos: usize, content: &[C::Item]) {
+    fn vec_insert_at<C: ListConfig>(list: &mut Vec<C::Item>, target_userpos: usize, content: &[C::Item]) where C::Item: Copy {
         let mut item_pos = vec_find_userpos::<C>(list, target_userpos);
         
         for item in content {
@@ -223,7 +223,7 @@ mod test {
         list.drain(item_pos .. item_pos+num_items);
     }
 
-    fn vec_replace<C: ListConfig>(list: &mut Vec<C::Item>, target_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) {
+    fn vec_replace<C: ListConfig>(list: &mut Vec<C::Item>, target_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
         vec_delete_at::<C>(list, target_userpos, removed_items);
         vec_insert_at::<C>(list, target_userpos, inserted_content);
     }
@@ -241,7 +241,7 @@ mod test {
         content
     }
 
-    fn random_edits<C: ListConfig>(gen_item: fn(r: &mut SmallRng) -> C::Item) where C::Item: PartialEq + Debug {
+    fn random_edits<C: ListConfig>(gen_item: fn(r: &mut SmallRng) -> C::Item) where C::Item: PartialEq + Debug + Copy {
         let mut list = SkipList::<C>::new();
         let mut vec = Vec::<<C as ListConfig>::Item>::new();
 
