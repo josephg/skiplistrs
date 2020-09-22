@@ -12,6 +12,11 @@ mod test {
 
     use std::fmt::Debug;
 
+    extern crate testdrop;
+    use self::testdrop::{Item as TDItem, TestDrop};
+
+    use std::iter;
+
     // This config makes all items take up the same amount of space.
     struct TestConfigFlat;
     impl ListConfig for TestConfigFlat {
@@ -76,7 +81,7 @@ mod test {
         list.del_at(1, 2);
         check(&list, &[1,4]);
         
-        list.replace_at(1, 1, &[5,6,7]);
+        list.replace_at_slice(1, 1, &[5,6,7]);
         check(&list, &[1,5,6,7]);
     }
     
@@ -85,7 +90,7 @@ mod test {
         let mut list = SkipList::<TestConfigFlat>::new();
         check(&list, &[]);
 
-        list.insert_at(0, &[]);
+        list.insert_at_slice(0, &[]);
         check(&list, &[]);
     }
 
@@ -93,16 +98,16 @@ mod test {
     fn insert_at_location() {
         let mut list = SkipList::<TestConfigFlat>::new();
 
-        list.insert_at(0, &[1,1,1]);
+        list.insert_at_slice(0, &[1,1,1]);
         check(&list, &[1,1,1]);
 
-        list.insert_at(0, &[2,2,2]);
+        list.insert_at_slice(0, &[2,2,2]);
         check(&list, &[2,2,2,1,1,1]);
 
-        list.insert_at(6, &[3,3,3]);
+        list.insert_at_slice(6, &[3,3,3]);
         check(&list, &[2,2,2,1,1,1,3,3,3]);
 
-        list.insert_at(5, &[4,4,4]);
+        list.insert_at_slice(5, &[4,4,4]);
         check(&list, &[2,2,2,1,1,4,4,4,1,3,3,3]);
     }
 
@@ -110,7 +115,7 @@ mod test {
     fn insert_between() {
         let mut list = SkipList::<TestConfigSized>::new_from_slice(&[5,2]);
         
-        list.insert_at(1, &[10]);
+        list.insert_at_slice(1, &[10]);
         check(&list, &[1,10,4,2]);
     }
 
@@ -171,19 +176,19 @@ mod test {
         let mut list = SkipList::<TestConfigSized>::new();
         check(&list, &[]);
         
-        list.insert_at(0, &[2,1]);
+        list.insert_at_slice(0, &[2,1]);
         check(&list, &[2,1]);
 
-        list.insert_at(2, &[0,0]);
+        list.insert_at_slice(2, &[0,0]);
         check(&list, &[2,0,0,1]);
         
-        list.insert_at(3, &[5]);
+        list.insert_at_slice(3, &[5]);
         check(&list, &[2,0,0,1,5]);
         
         list.del_at(3, 1);
         check(&list, &[2,0,0,1]);
 
-        list.insert_at(2, &[5,5]); // Inserted items go as far left as possible.
+        list.insert_at_slice(2, &[5,5]); // Inserted items go as far left as possible.
         check(&list, &[2,5,5,0,0,1]);
 
         list.del_at(12, 2);
@@ -267,7 +272,7 @@ mod test {
                 let content = gen_random_data::<C>(max_chunk_size, &mut rng, gen_item);
 
                 println!("insert {} content", content.len());
-                list.insert_at(userpos, content.as_slice());
+                list.insert_at_slice(userpos, content.as_slice());
                 vec_insert_at::<C>(&mut vec, userpos, content.as_slice());
 
                 check(&list, vec.as_slice());
@@ -293,7 +298,7 @@ mod test {
                 let ins_content = gen_random_data::<C>(max_chunk_size, &mut rng, gen_item);
 
                 println!("replace {} with {} items", num_deleted_items, ins_content.len());
-                list.replace_at(userpos, num_deleted_items, ins_content.as_slice());
+                list.replace_at_slice(userpos, num_deleted_items, ins_content.as_slice());
                 vec_replace::<C>(&mut vec, userpos, num_deleted_items, ins_content.as_slice());
 
                 check(&list, vec.as_slice());
@@ -309,5 +314,52 @@ mod test {
     #[test]
     fn random_edits_nonuniform() {
         random_edits::<TestConfigSized>(|rng| rng.gen_range(0, 10));
+    }
+
+
+    // use std::marker::PhantomData;
+    struct TestConfigDrop();
+    impl<'a> ListConfig for &'a TestConfigDrop {
+        type Item = TDItem<'a>;
+    }
+
+    #[test]
+    fn test_inserted_contents_dropped() {
+        let td = TestDrop::new();
+        let mut list = SkipList::<&TestConfigDrop>::new();
+        
+        let (id, item) = td.new_item();
+        list.insert_at(0, iter::once(item));
+        
+        drop(list);
+        td.assert_drop(id);
+    }
+
+    #[test]
+    fn test_replaced_contents_dropped() {
+        let td = TestDrop::new();
+        let mut list = SkipList::<&TestConfigDrop>::new();
+        
+        let (id1, item1) = td.new_item();
+        list.insert_at(0, iter::once(item1));
+
+        let (id2, item2) = td.new_item();
+        list.replace_at(0, 1, iter::once(item2));
+        td.assert_drop(id1);
+
+        drop(list);
+        td.assert_drop(id2);
+    }
+
+    #[test]
+    fn test_deleted_contents_dropped() {
+        let td = TestDrop::new();
+        let mut list = SkipList::<&TestConfigDrop>::new();
+        
+        let (id, item) = td.new_item();
+        list.insert_at(0, iter::once(item));
+
+        list.del_at(0, 1);
+        td.assert_drop(id);
     }
 }

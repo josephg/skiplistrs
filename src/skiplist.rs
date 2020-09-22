@@ -248,13 +248,13 @@ impl<C: ListConfig> Node<C> {
 
         unsafe {
             let node = alloc(Self::layout_with_height(height)) as *mut Node<C>;
-            (*node) = Node {
+            node.write(Node {
                 items: uninit_items_array(),
                 num_items: 0,
                 height: height,
                 parent: ptr::null_mut(),
                 nexts: [],
-            };
+            });
 
             for next in (*node).nexts_mut() {
                 *next = SkipEntry::new_null();
@@ -269,6 +269,7 @@ impl<C: ListConfig> Node<C> {
     }
 
     unsafe fn free(p: *mut Node<C>) {
+        ptr::drop_in_place(p); // We could just implement drop here, but this is cleaner.
         dealloc(p as *mut u8, Self::layout_with_height((*p).height));
     }
 
@@ -293,6 +294,16 @@ impl<C: ListConfig> Node<C> {
     
     fn get_next_ptr(&self) -> *mut Node<C> {
         self.first_skip_entry().node
+    }
+}
+
+impl<C: ListConfig> Drop for Node<C> {
+    fn drop(&mut self) {
+        for item in &mut self.items[0..self.num_items as usize] {
+            // Could instead call assume_init() on each item but this is
+            // friendlier to the optimizer.
+            unsafe { ptr::drop_in_place(item.as_mut_ptr()); }
+        }
     }
 }
 
@@ -560,7 +571,7 @@ impl<C: ListConfig> SkipList<C> {
 
     pub fn new_from_slice(s: &[C::Item]) -> Self where C::Item: Copy {
         let mut rope = Self::new();
-        rope.insert_at(0, s);
+        rope.insert_at_slice(0, s);
         rope
     }
 
@@ -1026,7 +1037,7 @@ impl<C: ListConfig> SkipList<C> {
             // the end of the current node's data and reinsert it later.
             let num_end_items = e_num_items - item_idx;
 
-            let (end_items, end_usercount) = if num_end_items > 0 {
+            let (end_items, _end_usercount) = if num_end_items > 0 {
                 // We'll mark the items as deleted from the node, while leaving
                 // the data itself there for now to avoid a copy.
 
@@ -1113,6 +1124,13 @@ impl<C: ListConfig> SkipList<C> {
                 let trailing_items = e_num_items - item_idx - removed_here;
                 
                 let c = &mut (*e).items;
+
+                if mem::needs_drop::<C::Item>() {
+                    for item in &mut c[item_idx..item_idx + removed_here] {
+                        ptr::drop_in_place(item.as_mut_ptr());
+                    }
+                }
+
                 removed_userlen = C::userlen_of_slice(maybeinit_slice_get_ref(&c[item_idx..item_idx + removed_here]));
                 if trailing_items > 0 {
                     ptr::copy(
@@ -1278,32 +1296,38 @@ impl<C: ListConfig> SkipList<C> {
 
     fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
 
-    pub fn replace_at(&mut self, mut start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
+    pub fn replace_at<I>(&mut self, mut start_userpos: usize, removed_items: usize, mut inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
         start_userpos = min(start_userpos, self.get_userlen());
 
         let (mut cursor, offset) = self.iter_at_userpos(start_userpos);
         assert_eq!(offset, 0, "Splitting nodes not yet supported");
 
-        unsafe { self.replace_at_iter(&mut cursor, removed_items, &mut inserted_content.iter().copied(), Self::no_notify); }
+        let num_inserted_items = inserted_content.len();
+        unsafe { self.replace_at_iter(&mut cursor, removed_items, &mut inserted_content, Self::no_notify); }
 
         if cfg!(debug_assertions) {
             let (mut c2, _) = self.iter_at_userpos(start_userpos);
-            c2.advance_by_items(inserted_content.len(), self.head.height);
+            c2.advance_by_items(num_inserted_items, self.head.height);
             if &cursor != &c2 { panic!("Invalid cursor after replace"); }
         }
     }
 
-    pub fn insert_at(&mut self, mut userpos: usize, contents: &[C::Item]) where C::Item: Copy {
+    pub fn replace_at_slice(&mut self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
+        self.replace_at(start_userpos, removed_items, inserted_content.iter().copied());
+    }
+
+    pub fn insert_at<I>(&mut self, mut userpos: usize, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
         if contents.len() == 0 { return; }
+        let num_inserted_items = contents.len();
         
         userpos = min(userpos, self.get_userlen());
         let (mut cursor, offset) = self.iter_at_userpos(userpos);
 
         unsafe {
             if offset == 0 {
-                self.insert_at_iter(&mut cursor, &mut contents.iter().copied(), &mut Self::no_notify);
+                self.insert_at_iter(&mut cursor, &mut contents, &mut Self::no_notify);
 
-                self.dbg_check_cursor_at(&cursor, userpos, contents.len());
+                self.dbg_check_cursor_at(&cursor, userpos, num_inserted_items);
             } else {
                 let current_item = cursor.current_item();
                 let (start, end) = C::split_item(current_item, offset);
@@ -1312,17 +1336,21 @@ impl<C: ListConfig> SkipList<C> {
                 cursor.move_to_item_start(self.head.height, offset);
                 // This feels pretty inefficient; but its probably fine.
                 self.replace_at_iter(&mut cursor, 1, &mut iter::once(start), &mut Self::no_notify);
-                self.insert_at_iter(&mut cursor, &mut contents.iter().copied(), &mut Self::no_notify);
+                self.insert_at_iter(&mut cursor, &mut contents, &mut Self::no_notify);
 
                 // There's no clean way to keep the cursor steady for the final
                 // insert. We'll just make sure the cursor is in the right
                 // position before that call for now.
-                self.dbg_check_cursor_at(&cursor, userpos, contents.len());
+                self.dbg_check_cursor_at(&cursor, userpos, num_inserted_items);
 
                 self.insert_at_iter(&mut cursor, &mut iter::once(end), &mut Self::no_notify);
             }
         }
 
+    }
+
+    pub fn insert_at_slice(&mut self, userpos: usize, contents: &[C::Item]) where C::Item: Copy {
+        self.insert_at(userpos, contents.iter().copied())
     }
 
     pub fn del_at(&mut self, mut userpos: usize, num_items: usize) {
