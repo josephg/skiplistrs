@@ -569,10 +569,14 @@ impl<C: ListConfig> SkipList<C> {
         self.rng.as_mut().unwrap()
     }
 
-    pub fn new_from_slice(s: &[C::Item]) -> Self where C::Item: Copy {
+    pub fn new_from_iter<I: ExactSizeIterator<Item=C::Item>>(iter: I) -> Self {
         let mut rope = Self::new();
-        rope.insert_at_slice(0, s);
+        rope.insert_at(0, iter);
         rope
+    }
+
+    pub fn new_from_slice(s: &[C::Item]) -> Self where C::Item: Copy {
+        Self::new_from_iter(s.iter().copied())
     }
 
     pub fn get_userlen(&self) -> usize {
@@ -1405,16 +1409,9 @@ impl<C: ListConfig> Drop for SkipList<C> {
 }
 
 
-impl<C: ListConfig> From<&[C::Item]> for SkipList<C> where C::Item: Copy {
-    fn from(s: &[C::Item]) -> SkipList<C> {
-        SkipList::new_from_slice(s)
-    }
-}
-
-// TODO: Remove Item: Copy constraint here.
-impl<C: ListConfig> From<Vec<C::Item>> for SkipList<C> where C::Item: Copy {
-    fn from(s: Vec<C::Item>) -> SkipList<C> {
-        SkipList::new_from_slice(s.as_slice())
+impl<C: ListConfig, I> From<I> for SkipList<C> where I: ExactSizeIterator<Item=C::Item> {
+    fn from(iter: I) -> SkipList<C> {
+        SkipList::new_from_iter(iter)
     }
 }
 
