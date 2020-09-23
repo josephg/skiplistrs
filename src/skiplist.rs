@@ -48,9 +48,10 @@ const MAX_HEIGHT: usize = 10;
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
-pub struct ItemMarker<'a, C: ListConfig> {
+#[derive(Clone, Copy)]
+pub struct ItemMarker<C: ListConfig> {
     ptr: *mut Node<C>,
-    _phantom: PhantomData<&'a SkipList<C>>
+    // _phantom: PhantomData<&'a SkipList<C>>
 }
 
 /// The whole list is configured through a single generic trait parameter
@@ -430,9 +431,16 @@ impl<'a, C: ListConfig> Cursor<C> {
         self.userpos -= offset;
     }
 
-    unsafe fn current_item(&mut self) -> &'a C::Item {
+    unsafe fn prev_item(&self) -> &'a C::Item {
         let node = &*self.here_ptr();
-        debug_assert!(node.num_items as usize >= self.local_index);
+        assert!(self.local_index > 0);
+        debug_assert!(self.local_index <= node.num_items as usize);
+        &*(node.items[self.local_index - 1].as_ptr())
+    }
+
+    unsafe fn current_item(&self) -> &'a C::Item {
+        let node = &*self.here_ptr();
+        debug_assert!(self.local_index < node.num_items as usize);
         &*(node.items[self.local_index].as_ptr())
     }
 
@@ -831,26 +839,26 @@ impl<C: ListConfig> SkipList<C> {
         cursor
     }
 
-    pub fn iter_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
+    /// SAFETY: Self must outlast the marker and not have been moved since the
+    /// marker was created. Self should really be Pin<>!
+    pub unsafe fn iter_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
         // The marker gives us a pointer into a node. Find the item.
-        unsafe {
-            let n = marker.ptr;
+        let n = marker.ptr;
 
-            let mut offset: usize = 0;
-            let mut local_index = None;
-            for (i, item) in (*n).content_slice().iter().enumerate() {
-                if let Some(item_offset) = item.contains_item(query) {
-                    offset += item_offset;
-                    local_index = Some(i);
-                    break;
-                } else {
-                    offset += C::get_usersize(item);
-                }
+        let mut offset: usize = 0;
+        let mut local_index = None;
+        for (i, item) in (*n).content_slice().iter().enumerate() {
+            if let Some(item_offset) = item.contains_item(query) {
+                offset += item_offset;
+                local_index = Some(i);
+                break;
+            } else {
+                offset += C::get_usersize(item);
             }
-
-            let local_index = local_index.expect("Invalid marker - item not found in node");
-            self.iter_at_node(n, offset, local_index)
         }
+
+        let local_index = local_index.expect("Invalid marker - item not found in node");
+        self.iter_at_node(n, offset, local_index)
     }
 
     // Internal fn to create a new node at the specified iterator filled with
@@ -955,7 +963,7 @@ impl<C: ListConfig> SkipList<C> {
 
         notify(new_node.content_slice(), ItemMarker {
             ptr: new_node_ptr,
-            _phantom: PhantomData
+            // _phantom: PhantomData
         });
     }
 
@@ -1038,7 +1046,7 @@ impl<C: ListConfig> SkipList<C> {
 
             notify(dest_content_slice, ItemMarker {
                 ptr: e,
-                _phantom: PhantomData
+                // _phantom: PhantomData
             });
         } else {
             // There isn't room. We'll need to add at least one new node to the
@@ -1107,7 +1115,7 @@ impl<C: ListConfig> SkipList<C> {
     /// If the deleted content occurs at the start of a node, the cursor passed
     /// here must point to the end of the previous node, not the start of the
     /// current node.
-    unsafe fn del_at_iter(&mut self, cursor: &mut Cursor<C>, mut num_deleted_items: usize) {
+    unsafe fn del_at_iter(&mut self, cursor: &Cursor<C>, mut num_deleted_items: usize) {
         if num_deleted_items == 0 { return; }
 
         let mut item_idx = cursor.local_index;
@@ -1285,7 +1293,7 @@ impl<C: ListConfig> SkipList<C> {
 
             notify(dest, ItemMarker {
                 ptr: e,
-                _phantom: PhantomData,
+                // _phantom: PhantomData,
             });
         }
 
@@ -1304,110 +1312,59 @@ impl<C: ListConfig> SkipList<C> {
     where Notify: FnMut(&[C::Item], ItemMarker<C>) {
         // This could easily be optimized.
         self.replace_at_iter(cursor, 1, &mut iter::once(new_item), notify);
-    }
 
-    fn dbg_check_cursor_at(&self, cursor: &Cursor<C>, userpos: usize, plus_items: usize) {
-        if cfg!(debug_assertions) {
-            let (mut c2, _) = self.iter_at_userpos(userpos);
-            c2.advance_by_items(plus_items, self.head.height);
-            assert_eq!(cursor, &c2);
-        }
+        // self.modify_at(start_userpos, Self::no_notify, |item, offset| {
+        //     assert_eq!(offset, 0, "replace_at must modify the entire item");
+        //     *item = 
+        // })
     }
 
     pub fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
 
-    pub fn replace_at<I>(&mut self, mut start_userpos: usize, removed_items: usize, mut inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
-        start_userpos = min(start_userpos, self.get_userlen());
-
-        let (mut cursor, offset) = self.iter_at_userpos(start_userpos);
-        assert_eq!(offset, 0, "Splitting nodes not yet supported");
-
-        let num_inserted_items = inserted_content.len();
-        unsafe { self.replace_at_iter(&mut cursor, removed_items, &mut inserted_content, Self::no_notify); }
-
-        self.dbg_check_cursor_at(&cursor, start_userpos, num_inserted_items);
+    pub fn replace_at<I>(&mut self, start_userpos: usize, removed_items: usize, inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
+        self.edit(start_userpos, |edit| {
+            edit.replace(removed_items, inserted_content);
+        })
     }
 
     pub fn replace_at_slice(&mut self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
         self.replace_at(start_userpos, removed_items, inserted_content.iter().copied());
     }
 
-    pub fn modify_at<Notify, F>(&mut self, userpos: usize, mut notify: Notify, modify_fn: F)
-    where Notify: FnMut(&[C::Item], ItemMarker<C>), F: FnOnce(&mut C::Item, usize) {
-        let (mut cursor, offset) = self.iter_at_userpos(userpos);
-        let e = cursor.here_ptr();
-        let item = unsafe { cursor.current_item_mut() };
-        let old_usersize = C::get_usersize(item);
-        modify_fn(item, offset);
-        let new_usersize = C::get_usersize(item);
-
-        let usersize_delta = new_usersize as isize - old_usersize as isize;
-
-        if usersize_delta != 0 {
-            cursor.update_offsets(self.head.height as usize, usersize_delta);
-            self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
-        }
-
-        notify(std::slice::from_ref(item), ItemMarker {
-            ptr: e,
-            _phantom: PhantomData,
-        });
-
-        // cursor.update_offsets(self.head.height as usize, new_size as isize - old_size as isize);
+    pub fn modify_item_at<F>(&mut self, userpos: usize, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
+        self.edit(userpos, |edit| edit.modify_item(modify_fn));
     }
 
-    pub fn insert_at<I>(&mut self, mut userpos: usize, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
-        if contents.len() == 0 { return; }
-        let num_inserted_items = contents.len();
-        
-        userpos = min(userpos, self.get_userlen());
-        let (mut cursor, offset) = self.iter_at_userpos(userpos);
-
-        unsafe {
-            if offset == 0 {
-                self.insert_at_iter(&mut cursor, &mut contents, &mut Self::no_notify);
-
-                self.dbg_check_cursor_at(&cursor, userpos, num_inserted_items);
-            } else {
-                let current_item = cursor.current_item();
-                let (start, end) = C::split_item(current_item, offset);
-                // Move the cursor back to the start of the item we're
-                // splitting.
-                cursor.move_to_item_start(self.head.height, offset);
-                // This feels pretty inefficient; but its probably fine.
-                self.replace_item(&mut cursor, start, &mut Self::no_notify);
-
-                // TODO: Consider concatenating end into contents then just call
-                // insert_at_iter once.
-                self.insert_at_iter(&mut cursor, &mut contents, &mut Self::no_notify);
-
-                self.dbg_check_cursor_at(&cursor, userpos, num_inserted_items);
-
-                self.insert_at_iter(&mut cursor, &mut iter::once(end), &mut Self::no_notify);
-            }
-        }
-
+    pub fn insert_at<I>(&mut self, userpos: usize, contents: I)
+    where I: ExactSizeIterator<Item=C::Item> {
+        self.edit(userpos, |edit| edit.insert_iter(contents))
     }
 
     pub fn insert_at_slice(&mut self, userpos: usize, contents: &[C::Item]) where C::Item: Copy {
         self.insert_at(userpos, contents.iter().copied())
     }
 
-    pub fn del_at(&mut self, mut userpos: usize, num_items: usize) {
-        userpos = min(userpos, self.get_userlen());
-        // We can't easily trim num_items.
-        // num_items = min(length, self.num_chars() - pos);
-        if num_items == 0 { return; }
+    pub fn del_at(&mut self, userpos: usize, num_items: usize) {
+        self.edit(userpos, |edit| edit.del(num_items))
+    }
 
-        let (mut cursor, offset) = self.iter_at_userpos(userpos);
-        assert_eq!(offset, 0, "Splitting nodes not yet supported");
+    pub fn edit<F, R>(&mut self, userpos: usize, f: F) -> R
+    where F: FnOnce(&mut Edit<C>) -> R {
+        // self.edit_notify(userpos, no_notify_x::<C>, f)
+        let (cursor, item_offset) = self.iter_at_userpos(userpos);
+        let mut edit = Edit { list: self, cursor, item_offset, notify: Self::no_notify };
 
-        unsafe { self.del_at_iter(&mut cursor, num_items); }
+        // TODO: Or maybe I should pass ownership here?
+        f(&mut edit)
+    }
 
-        if cfg!(debug_assertions) {
-            let (c2, _) = self.iter_at_userpos(userpos);
-            if &cursor != &c2 { panic!("Invalid cursor after delete"); }
-        }
+    pub fn edit_notify<F, R>(&mut self, userpos: usize, notify: fn(&[C::Item], ItemMarker<C>), f: F) -> R
+    where F: FnOnce(&mut Edit<C>) -> R {
+        let (cursor, item_offset) = self.iter_at_userpos(userpos);
+        let mut edit = Edit { list: self, cursor, item_offset, notify };
+
+        // TODO: Or maybe I should pass ownership here?
+        f(&mut edit)
     }
 
     // TODO: Don't export this.
@@ -1439,6 +1396,139 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 }
+
+// pub struct Edit<'a, C: ListConfig, Notify: FnMut(&[C::Item], ItemMarker<C>)> {
+//     list: &'a mut SkipList<C>,
+//     cursor: Cursor<C>,
+//     item_offset: usize, // Offset into the current item.
+//     notify: Notify
+// }
+pub struct Edit<'a, C: ListConfig> {
+    list: &'a mut SkipList<C>,
+    cursor: Cursor<C>,
+    item_offset: usize, // Offset into the current item.
+    notify: fn(&[C::Item], ItemMarker<C>)
+}
+
+// impl<'a, C: ListConfig, Notify: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, Notify> {
+impl<'a, C: ListConfig> Edit<'a, C> {
+    fn dbg_check_cursor_at(&self, userpos: usize, plus_items: usize) {
+        if cfg!(debug_assertions) {
+            let (mut c2, _) = self.list.iter_at_userpos(userpos);
+            c2.advance_by_items(plus_items, self.list.head.height);
+            assert_eq!(&self.cursor, &c2);
+        }
+    }
+
+    pub fn del(&mut self, num_items: usize) {
+        assert_eq!(self.item_offset, 0, "Splitting nodes not yet supported");
+
+        unsafe { self.list.del_at_iter(&self.cursor, num_items); }
+
+        if cfg!(debug_assertions) {
+            let (c2, _) = self.list.iter_at_userpos(self.cursor.userpos);
+            if &self.cursor != &c2 { panic!("Invalid cursor after delete"); }
+        }
+    }
+
+    pub fn insert_iter<I>(&mut self, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
+        if contents.len() == 0 { return; }
+        let num_inserted_items = contents.len();
+        
+        // userpos = min(userpos, self.get_userlen());
+        // let (mut cursor, offset) = self.iter_at_userpos(userpos);
+
+        let start_userpos = self.cursor.userpos;
+
+        unsafe {
+            if self.item_offset == 0 {
+                self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
+
+                self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+            } else {
+                let current_item = self.cursor.current_item();
+                let (start, end) = C::split_item(current_item, self.item_offset);
+                // Move the cursor back to the start of the item we're
+                // splitting.
+                self.cursor.move_to_item_start(self.list.head.height, self.item_offset);
+                // This feels pretty inefficient; but its probably fine.
+                self.list.replace_item(&mut self.cursor, start, &mut self.notify);
+
+                // TODO: Consider concatenating end into contents then just call
+                // insert_at_iter once.
+                self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
+
+                self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+
+                self.list.insert_at_iter(&mut self.cursor, &mut iter::once(end), &mut self.notify);
+            }
+        }
+    }
+
+    pub fn insert(&mut self, item: C::Item) {
+        self.insert_iter(iter::once(item));
+    }
+
+    pub fn insert_slice(&mut self, items: &[C::Item]) where C::Item: Copy {
+        self.insert_iter(items.iter().copied());
+    }
+
+    pub fn replace<I>(&mut self, removed_items: usize, mut inserted_content: I)
+    where I: ExactSizeIterator<Item=C::Item> {
+        assert_eq!(self.item_offset, 0, "Splitting nodes not yet supported");
+
+        let num_inserted_items = inserted_content.len();
+        let start_userpos = self.cursor.userpos;
+        
+        unsafe { self.list.replace_at_iter(&mut self.cursor, removed_items, &mut inserted_content, self.notify); }
+
+        self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+    }
+
+    pub fn prev_item(&self) -> Option<(&C::Item, usize)> {
+        if self.item_offset == 0 {
+            if self.cursor.local_index == 0 {
+                assert!(self.cursor.userpos == 0, "Invalid cursor");
+                None
+            } else {
+                Some((unsafe { self.cursor.prev_item() }, self.item_offset))
+            }
+        } else {
+            Some((unsafe { self.cursor.current_item() }, self.item_offset))
+        }
+    }
+
+    pub fn advance_item(&mut self) {
+        self.cursor.advance_item(self.list.head.height);
+        self.item_offset = 0;
+    }
+
+    pub fn modify_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
+        let e = self.cursor.here_ptr();
+        let item = unsafe { self.cursor.current_item_mut() };
+        let old_usersize = C::get_usersize(item);
+        modify_fn(item, self.item_offset);
+        let new_usersize = C::get_usersize(item);
+
+        let usersize_delta = new_usersize as isize - old_usersize as isize;
+
+        if usersize_delta != 0 {
+            self.cursor.update_offsets(self.list.head.height as usize, usersize_delta);
+            self.list.num_usercount = self.list.num_usercount.wrapping_add(usersize_delta as usize);
+            self.item_offset = usize::max(self.item_offset, new_usersize);
+        }
+
+        (self.notify)(std::slice::from_ref(item), ItemMarker {
+            ptr: e,
+            // _phantom: PhantomData,
+        });
+    }
+
+    pub fn replace_item(&mut self, replacement: C::Item) {
+        self.modify_item(|old, _offset| *old = replacement);
+    }
+}
+
 
 
 impl<C: ListConfig> SkipList<C> where C::Item: PartialEq {
