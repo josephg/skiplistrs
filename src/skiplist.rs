@@ -54,6 +54,16 @@ pub struct ItemMarker<C: ListConfig> {
     // _phantom: PhantomData<&'a SkipList<C>>
 }
 
+impl<C: ListConfig> ItemMarker<C> {
+    pub fn null() -> ItemMarker<C> {
+        ItemMarker { ptr: ptr::null_mut() }
+    }
+
+    pub fn is_null(self) -> bool {
+        self.ptr.is_null()
+    }
+}
+
 /// The whole list is configured through a single generic trait parameter
 pub trait ListConfig {
     type Item;
@@ -1322,9 +1332,7 @@ impl<C: ListConfig> SkipList<C> {
     pub fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
 
     pub fn replace_at<I>(&mut self, start_userpos: usize, removed_items: usize, inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
-        self.edit(start_userpos, |edit| {
-            edit.replace(removed_items, inserted_content);
-        })
+        self.edit(start_userpos).replace(removed_items, inserted_content);
     }
 
     pub fn replace_at_slice(&mut self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
@@ -1332,12 +1340,12 @@ impl<C: ListConfig> SkipList<C> {
     }
 
     pub fn modify_item_at<F>(&mut self, userpos: usize, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        self.edit(userpos, |edit| edit.modify_item(modify_fn));
+        self.edit(userpos).modify_item(modify_fn)
     }
 
     pub fn insert_at<I>(&mut self, userpos: usize, contents: I)
     where I: ExactSizeIterator<Item=C::Item> {
-        self.edit(userpos, |edit| edit.insert_iter(contents))
+        self.edit(userpos).insert_iter(contents)
     }
 
     pub fn insert_at_slice(&mut self, userpos: usize, contents: &[C::Item]) where C::Item: Copy {
@@ -1345,26 +1353,18 @@ impl<C: ListConfig> SkipList<C> {
     }
 
     pub fn del_at(&mut self, userpos: usize, num_items: usize) {
-        self.edit(userpos, |edit| edit.del(num_items))
+        self.edit(userpos).del(num_items)
     }
 
-    pub fn edit<F, R>(&mut self, userpos: usize, f: F) -> R
-    where F: FnOnce(&mut Edit<C>) -> R {
+    pub fn edit(&mut self, userpos: usize) -> Edit<C> {
         // self.edit_notify(userpos, no_notify_x::<C>, f)
         let (cursor, item_offset) = self.iter_at_userpos(userpos);
-        let mut edit = Edit { list: self, cursor, item_offset, notify: Self::no_notify };
-
-        // TODO: Or maybe I should pass ownership here?
-        f(&mut edit)
+        Edit { list: self, cursor, item_offset, notify: Self::no_notify }
     }
 
-    pub fn edit_notify<F, R>(&mut self, userpos: usize, notify: fn(&[C::Item], ItemMarker<C>), f: F) -> R
-    where F: FnOnce(&mut Edit<C>) -> R {
+    pub fn edit_notify(&mut self, userpos: usize, notify: fn(&[C::Item], ItemMarker<C>)) -> Edit<C> {
         let (cursor, item_offset) = self.iter_at_userpos(userpos);
-        let mut edit = Edit { list: self, cursor, item_offset, notify };
-
-        // TODO: Or maybe I should pass ownership here?
-        f(&mut edit)
+        Edit { list: self, cursor, item_offset, notify }
     }
 
     // TODO: Don't export this.
