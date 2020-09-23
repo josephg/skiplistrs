@@ -338,9 +338,6 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 ///   must not be moved or deleted
 #[derive(Copy, Clone)]
 pub struct Cursor<C: ListConfig> {
-    // TODO: Add a phantom lifetime reference to the skip list root for safety.
-
-
     /// The global user position of the cursor in the entire list. This is used
     /// for when the max seen height increases, so we can populate previously
     /// unused entries in the cursor and in the head node.
@@ -356,9 +353,14 @@ pub struct Cursor<C: ListConfig> {
     local_index: usize,
 
     entries: [SkipEntry<C>; MAX_HEIGHT],
+
+    // TODO: The cursor can't outlive the skiplist, but doing this makes it
+    // tricky to pass cursors around in the Skiplist type. There's probably a
+    // way out of this mess, but I'm not good enough at rust to figure it out.
+    // _marker: PhantomData<&'a SkipList<C>>,
 }
 
-impl<C: ListConfig> Cursor<C> {
+impl<'a, C: ListConfig> Cursor<C> {
     fn update_offsets(&mut self, height: usize, by: isize) {
         for i in 0..height {
             unsafe {
@@ -428,10 +430,16 @@ impl<C: ListConfig> Cursor<C> {
         self.userpos -= offset;
     }
 
-    unsafe fn current_item(&mut self) -> &C::Item {
+    unsafe fn current_item(&mut self) -> &'a C::Item {
         let node = &*self.here_ptr();
         debug_assert!(node.num_items as usize >= self.local_index);
         &*(node.items[self.local_index].as_ptr())
+    }
+
+    unsafe fn current_item_mut(&mut self) -> &'a mut C::Item {
+        let node = &mut *self.here_ptr();
+        debug_assert!(node.num_items as usize >= self.local_index);
+        &mut *(node.items[self.local_index].as_mut_ptr())
     }
 
     /// Get the pointer to the cursor's current node
@@ -730,6 +738,7 @@ impl<C: ListConfig> SkipList<C> {
             }; MAX_HEIGHT],
             local_index: 0,
             userpos: target_userpos,
+            // _marker: PhantomData,
         };
 
         loop { // while height >= 0
@@ -783,6 +792,7 @@ impl<C: ListConfig> SkipList<C> {
                 node: &self.head as *const _ as *mut _,
                 skip_usersize: usize::MAX
             }; MAX_HEIGHT],
+            // _marker: PhantomData
         };
 
         let mut h = 0;
@@ -1258,10 +1268,10 @@ impl<C: ListConfig> SkipList<C> {
             let usersize_delta = new_usersize as isize - old_usersize as isize;
 
             if usersize_delta != 0 {
-                cursor.update_offsets(self.head.height as usize, usersize_delta)
+                cursor.update_offsets(self.head.height as usize, usersize_delta);
+                // I hate this.
+                self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
             }
-            // I hate this.
-            self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
 
             replaced_items -= replaced_items_here;
             // We'll hop to the next Node at the start of the next loop
@@ -1290,6 +1300,12 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
+    unsafe fn replace_item<Notify>(&mut self, cursor: &mut Cursor<C>, new_item: C::Item, notify: Notify)
+    where Notify: FnMut(&[C::Item], ItemMarker<C>) {
+        // This could easily be optimized.
+        self.replace_at_iter(cursor, 1, &mut iter::once(new_item), notify);
+    }
+
     fn dbg_check_cursor_at(&self, cursor: &Cursor<C>, userpos: usize, plus_items: usize) {
         if cfg!(debug_assertions) {
             let (mut c2, _) = self.iter_at_userpos(userpos);
@@ -1298,7 +1314,7 @@ impl<C: ListConfig> SkipList<C> {
         }
     }
 
-    fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
+    pub fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
 
     pub fn replace_at<I>(&mut self, mut start_userpos: usize, removed_items: usize, mut inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
         start_userpos = min(start_userpos, self.get_userlen());
@@ -1309,15 +1325,35 @@ impl<C: ListConfig> SkipList<C> {
         let num_inserted_items = inserted_content.len();
         unsafe { self.replace_at_iter(&mut cursor, removed_items, &mut inserted_content, Self::no_notify); }
 
-        if cfg!(debug_assertions) {
-            let (mut c2, _) = self.iter_at_userpos(start_userpos);
-            c2.advance_by_items(num_inserted_items, self.head.height);
-            if &cursor != &c2 { panic!("Invalid cursor after replace"); }
-        }
+        self.dbg_check_cursor_at(&cursor, start_userpos, num_inserted_items);
     }
 
     pub fn replace_at_slice(&mut self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
         self.replace_at(start_userpos, removed_items, inserted_content.iter().copied());
+    }
+
+    pub fn modify_at<Notify, F>(&mut self, userpos: usize, mut notify: Notify, modify_fn: F)
+    where Notify: FnMut(&[C::Item], ItemMarker<C>), F: FnOnce(&mut C::Item, usize) {
+        let (mut cursor, offset) = self.iter_at_userpos(userpos);
+        let e = cursor.here_ptr();
+        let item = unsafe { cursor.current_item_mut() };
+        let old_usersize = C::get_usersize(item);
+        modify_fn(item, offset);
+        let new_usersize = C::get_usersize(item);
+
+        let usersize_delta = new_usersize as isize - old_usersize as isize;
+
+        if usersize_delta != 0 {
+            cursor.update_offsets(self.head.height as usize, usersize_delta);
+            self.num_usercount = self.num_usercount.wrapping_add(usersize_delta as usize);
+        }
+
+        notify(std::slice::from_ref(item), ItemMarker {
+            ptr: e,
+            _phantom: PhantomData,
+        });
+
+        // cursor.update_offsets(self.head.height as usize, new_size as isize - old_size as isize);
     }
 
     pub fn insert_at<I>(&mut self, mut userpos: usize, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
@@ -1339,12 +1375,12 @@ impl<C: ListConfig> SkipList<C> {
                 // splitting.
                 cursor.move_to_item_start(self.head.height, offset);
                 // This feels pretty inefficient; but its probably fine.
-                self.replace_at_iter(&mut cursor, 1, &mut iter::once(start), &mut Self::no_notify);
+                self.replace_item(&mut cursor, start, &mut Self::no_notify);
+
+                // TODO: Consider concatenating end into contents then just call
+                // insert_at_iter once.
                 self.insert_at_iter(&mut cursor, &mut contents, &mut Self::no_notify);
 
-                // There's no clean way to keep the cursor steady for the final
-                // insert. We'll just make sure the cursor is in the right
-                // position before that call for now.
                 self.dbg_check_cursor_at(&cursor, userpos, num_inserted_items);
 
                 self.insert_at_iter(&mut cursor, &mut iter::once(end), &mut Self::no_notify);
@@ -1371,6 +1407,35 @@ impl<C: ListConfig> SkipList<C> {
         if cfg!(debug_assertions) {
             let (c2, _) = self.iter_at_userpos(userpos);
             if &cursor != &c2 { panic!("Invalid cursor after delete"); }
+        }
+    }
+
+    // TODO: Don't export this.
+    pub fn print(&self) where C::Item: std::fmt::Debug {
+        println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.get_userlen(), self.head.height);
+
+        print!("HEAD:");
+        for s in self.head.nexts() {
+            print!(" |{} ", s.skip_usersize);
+        }
+        println!("");
+
+        use std::collections::HashMap;
+        let mut ptr_to_id = HashMap::new();
+        // ptr_to_id.insert(std::ptr::null(), usize::MAX);
+        for (i, node) in self.iter().enumerate() {
+            print!("{}:", i);
+            ptr_to_id.insert(node as *const _, i);
+            for s in node.nexts() {
+                print!(" |{} ", s.skip_usersize);
+            }
+            print!("      : {:?}", node.content_slice());
+            if let Some(id) = ptr_to_id.get(&(node.parent as *const _)) {
+                print!(" (parent: {})", id);
+            }
+            print!(" (pointer: {:?})", node as *const _);
+
+            println!();
         }
     }
 }
@@ -1424,37 +1489,6 @@ impl<C: ListConfig> Into<Vec<C::Item>> for &SkipList<C> where C::Item: Copy {
         }
 
         content
-    }
-}
-
-impl<C: ListConfig> SkipList<C> where C::Item: std::fmt::Debug {
-    // TODO: Don't export this.
-    pub fn print(&self) {
-        println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.get_userlen(), self.head.height);
-
-        print!("HEAD:");
-        for s in self.head.nexts() {
-            print!(" |{} ", s.skip_usersize);
-        }
-        println!("");
-
-        use std::collections::HashMap;
-        let mut ptr_to_id = HashMap::new();
-        // ptr_to_id.insert(std::ptr::null(), usize::MAX);
-        for (i, node) in self.iter().enumerate() {
-            print!("{}:", i);
-            ptr_to_id.insert(node as *const _, i);
-            for s in node.nexts() {
-                print!(" |{} ", s.skip_usersize);
-            }
-            print!("      : {:?}", node.content_slice());
-            if let Some(id) = ptr_to_id.get(&(node.parent as *const _)) {
-                print!(" (parent: {})", id);
-            }
-            print!(" (pointer: {:?})", node as *const _);
-
-            println!();
-        }
     }
 }
 

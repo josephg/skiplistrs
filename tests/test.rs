@@ -170,7 +170,6 @@ mod test {
         check(&list, &[content[0], content[len-1]]);
     }
 
-
     #[test]
     fn nonuniform_edits() {
         let mut list = SkipList::<TestConfigSized>::new();
@@ -193,6 +192,22 @@ mod test {
 
         list.del_at(12, 2);
         check(&list, &[2,5,5,1]);
+    }
+
+    #[test]
+    fn modify_item() {
+        let mut list = SkipList::<TestConfigSized>::new_from_slice(&[5,4,3,2,1]);
+        list.modify_at(5, SkipList::no_notify, |item, offset| {
+            assert_eq!(offset, 0);
+            *item = 10;
+        });
+        check(&list, &[5,10,3,2,1]);
+
+        list.modify_at(17, SkipList::no_notify, |item, offset| {
+            assert_eq!(offset, 2); // And check a non-zero offset.
+            *item = 1;
+        });
+        check(&list, &[5,10,1,2,1]);
     }
 
 
@@ -324,7 +339,7 @@ mod test {
     }
 
     #[test]
-    fn test_inserted_contents_dropped() {
+    fn inserted_contents_dropped() {
         let td = TestDrop::new();
         let mut list = SkipList::<&TestConfigDrop>::new();
         
@@ -336,7 +351,7 @@ mod test {
     }
 
     #[test]
-    fn test_replaced_contents_dropped() {
+    fn replaced_contents_dropped() {
         let td = TestDrop::new();
         let mut list = SkipList::<&TestConfigDrop>::new();
         
@@ -352,7 +367,7 @@ mod test {
     }
 
     #[test]
-    fn test_deleted_contents_dropped() {
+    fn deleted_contents_dropped() {
         let td = TestDrop::new();
         let mut list = SkipList::<&TestConfigDrop>::new();
         
