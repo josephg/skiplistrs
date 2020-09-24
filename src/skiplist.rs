@@ -453,6 +453,13 @@ impl<'a, C: ListConfig> Cursor<C> {
         &*(node.items[self.local_index - 1].as_ptr())
     }
 
+    unsafe fn prev_item_mut(&mut self) -> &'a mut C::Item {
+        let node = &mut *self.here_ptr();
+        assert!(self.local_index > 0);
+        debug_assert!(self.local_index <= node.num_items as usize);
+        &mut *(node.items[self.local_index - 1].as_mut_ptr())
+    }
+
     unsafe fn current_item(&self) -> &'a C::Item {
         let node = &*self.here_ptr();
         debug_assert!(self.local_index < node.num_items as usize);
@@ -461,7 +468,7 @@ impl<'a, C: ListConfig> Cursor<C> {
 
     unsafe fn current_item_mut(&mut self) -> &'a mut C::Item {
         let node = &mut *self.here_ptr();
-        debug_assert!(node.num_items as usize >= self.local_index);
+        debug_assert!(node.num_items as usize > self.local_index);
         &mut *(node.items[self.local_index].as_mut_ptr())
     }
 
@@ -1358,7 +1365,7 @@ impl<C: ListConfig> SkipList<C> {
     }
 
     pub fn modify_item_at<F>(&mut self, userpos: usize, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        self.edit(userpos).modify_item(modify_fn)
+        self.edit(userpos).modify_next_item(modify_fn)
     }
 
     pub fn insert_at<I>(&mut self, userpos: usize, contents: I)
@@ -1613,9 +1620,10 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
         self.item_offset = 0;
     }
 
-    pub fn modify_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        let e = self.cursor.here_ptr();
-        let item = unsafe { self.cursor.current_item_mut() };
+    unsafe fn modify_item<F>(&mut self, modify_prev: bool, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
+        let item = if modify_prev { self.cursor.prev_item_mut() }
+        else { self.cursor.current_item_mut() };
+
         let old_usersize = C::get_usersize(item);
         modify_fn(item, self.item_offset);
         let new_usersize = C::get_usersize(item);
@@ -1629,13 +1637,27 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
         }
 
         (self.notify)(std::slice::from_ref(item), ItemMarker {
-            ptr: e,
+            ptr: self.cursor.here_ptr(),
             // _phantom: PhantomData,
         });
     }
 
+    pub fn modify_prev_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
+        unsafe { self.modify_item(true, modify_fn); }
+    }
+
+    // TODO: Not sure if this function is correct. Needs tests!
+    pub fn modify_next_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
+        if self.cursor.is_at_node_end()
+        || (self.item_offset > 0 && self.item_offset >= C::get_usersize(unsafe { self.cursor.current_item() })) {
+            self.advance_item();
+        }
+
+        unsafe { self.modify_item(false, modify_fn); }
+    }
+
     pub fn replace_item(&mut self, replacement: C::Item) {
-        self.modify_item(|old, _offset| *old = replacement);
+        self.modify_prev_item(|old, _offset| *old = replacement);
     }
 }
 
