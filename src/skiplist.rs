@@ -376,7 +376,7 @@ pub struct Cursor<C: ListConfig> {
     // _marker: PhantomData<&'a SkipList<C>>,
 }
 
-impl<'a, C: ListConfig> Cursor<C> {
+impl<C: ListConfig> Cursor<C> {
     fn update_offsets(&mut self, height: usize, by: isize) {
         for i in 0..height {
             unsafe {
@@ -426,7 +426,7 @@ impl<'a, C: ListConfig> Cursor<C> {
 
     fn advance_item(&mut self, height: u8) {
         if self.is_at_node_end() { self.advance_node(); }
-        let usersize = C::get_usersize(unsafe { self.current_item() });
+        let usersize = C::get_usersize(unsafe { self.current_item().unwrap() });
 
         for entry in &mut self.entries[0..height as usize] {
             entry.skip_usersize += usersize;
@@ -446,30 +446,58 @@ impl<'a, C: ListConfig> Cursor<C> {
         self.userpos -= offset;
     }
 
-    unsafe fn prev_item(&self) -> &'a C::Item {
+    unsafe fn prev_item<'a>(&self) -> Option<&'a C::Item> {
         let node = &*self.here_ptr();
-        assert!(self.local_index > 0);
-        debug_assert!(self.local_index <= node.num_items as usize);
-        &*(node.items[self.local_index - 1].as_ptr())
+        if self.local_index == 0 {
+            assert_eq!(self.userpos, 0, "Invalid state: Cursor at start of node");
+            None
+        } else {
+            debug_assert!(self.local_index <= node.num_items as usize);
+            Some(&*(node.items[self.local_index - 1].as_ptr()))
+        }
     }
 
-    unsafe fn prev_item_mut(&mut self) -> &'a mut C::Item {
+    unsafe fn prev_item_mut<'a>(&mut self) -> Option<&'a mut C::Item> {
         let node = &mut *self.here_ptr();
-        assert!(self.local_index > 0);
-        debug_assert!(self.local_index <= node.num_items as usize);
-        &mut *(node.items[self.local_index - 1].as_mut_ptr())
+        if self.local_index == 0 {
+            assert_eq!(self.userpos, 0);
+            None
+        } else {
+            debug_assert!(self.local_index <= node.num_items as usize);
+            Some(&mut *(node.items[self.local_index - 1].as_mut_ptr()))
+        }
     }
 
-    unsafe fn current_item(&self) -> &'a C::Item {
+    // Could be Option<NonNull<_>>...
+    unsafe fn peek_next_item(&self) -> Option<*mut C::Item> {
+        let next = (*self.here_ptr()).get_next_ptr();
+        if next.is_null() { None }
+        else {
+            debug_assert!((*next).num_items > 0);
+            Some((*next).items[0].as_mut_ptr())
+        }
+    }
+
+    unsafe fn current_item<'a>(&self) -> Option<&'a C::Item> {
         let node = &*self.here_ptr();
-        debug_assert!(self.local_index < node.num_items as usize);
-        &*(node.items[self.local_index].as_ptr())
+        if self.local_index < node.num_items as usize {
+            // Ok - just return the current item.
+            Some(&*(node.items[self.local_index].as_ptr()))
+        } else {
+            // Peek the first item in the next node.
+            self.peek_next_item().map(|ptr| &*ptr)
+        }
     }
 
-    unsafe fn current_item_mut(&mut self) -> &'a mut C::Item {
+    unsafe fn current_item_mut<'a>(&mut self) -> Option<&'a mut C::Item> {
         let node = &mut *self.here_ptr();
-        debug_assert!(node.num_items as usize > self.local_index);
-        &mut *(node.items[self.local_index].as_mut_ptr())
+        if self.local_index < node.num_items as usize {
+            // Ok - just return the current item.
+            Some(&mut *(node.items[self.local_index].as_mut_ptr()))
+        } else {
+            // Peek the first item in the next node.
+            self.peek_next_item().map(|ptr| &mut *ptr)
+        }
     }
 
     /// Get the pointer to the cursor's current node
@@ -1356,21 +1384,22 @@ impl<C: ListConfig> SkipList<C> {
 
     pub fn no_notify(_items: &[C::Item], _marker: ItemMarker<C>) {}
 
-    pub fn replace_at<I>(&mut self, start_userpos: usize, removed_items: usize, inserted_content: I) where I: ExactSizeIterator<Item=C::Item> {
-        self.edit(start_userpos).replace(removed_items, inserted_content);
+    pub fn replace_at<I: ExactSizeIterator<Item=C::Item>>(&mut self, start_userpos: usize, removed_items: usize, inserted_content: I) {
+        self.edit_between(start_userpos).replace(removed_items, inserted_content);
     }
 
     pub fn replace_at_slice(&mut self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
         self.replace_at(start_userpos, removed_items, inserted_content.iter().copied());
     }
 
-    pub fn modify_item_at<F>(&mut self, userpos: usize, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        self.edit(userpos).modify_next_item(modify_fn)
+    pub fn modify_item_after<F: FnOnce(&mut C::Item, usize)>(&mut self, userpos: usize, modify_fn: F) {
+        let (mut edit, offset) = self.edit(userpos);
+        edit.modify_current_item(|item| modify_fn(item, offset))
     }
 
-    pub fn insert_at<I>(&mut self, userpos: usize, contents: I)
-    where I: ExactSizeIterator<Item=C::Item> {
-        self.edit(userpos).insert_iter(contents)
+    pub fn insert_at<I: ExactSizeIterator<Item=C::Item>>(&mut self, userpos: usize, contents: I) {
+        let (mut edit, offset) = self.edit(userpos);
+        edit.insert_between_iter(offset, contents);
     }
 
     pub fn insert_at_slice(&mut self, userpos: usize, contents: &[C::Item]) where C::Item: Copy {
@@ -1378,18 +1407,25 @@ impl<C: ListConfig> SkipList<C> {
     }
 
     pub fn del_at(&mut self, userpos: usize, num_items: usize) {
-        self.edit(userpos).del(num_items)
+        self.edit_between(userpos).del(num_items)
     }
 
-    pub fn edit(&mut self, userpos: usize) -> Edit<C, impl FnMut(&[C::Item], ItemMarker<C>)> {
+    pub fn edit(&mut self, userpos: usize) -> (Edit<C, impl FnMut(&[C::Item], ItemMarker<C>)>, usize) {
         // self.edit_notify(userpos, no_notify_x::<C>, f)
         let (cursor, item_offset) = self.iter_at_userpos(userpos);
-        Edit { list: self, cursor, item_offset, notify: Self::no_notify }
+        (Edit { list: self, cursor, notify: Self::no_notify }, item_offset)
     }
 
-    pub fn edit_notify<N: FnMut(&[C::Item], ItemMarker<C>)>(&mut self, userpos: usize, notify: N) -> Edit<C, N> {
+    pub fn edit_between(&mut self, userpos: usize) -> Edit<C, impl FnMut(&[C::Item], ItemMarker<C>)> {
+        // self.edit_notify(userpos, no_notify_x::<C>, f)
         let (cursor, item_offset) = self.iter_at_userpos(userpos);
-        Edit { list: self, cursor, item_offset, notify }
+        assert_eq!(item_offset, 0, "edit_between landed inside an item");
+        Edit { list: self, cursor, notify: Self::no_notify }
+    }
+
+    pub fn edit_notify<N: FnMut(&[C::Item], ItemMarker<C>)>(&mut self, userpos: usize, notify: N) -> (Edit<C, N>, usize) {
+        let (cursor, item_offset) = self.iter_at_userpos(userpos);
+        (Edit { list: self, cursor, notify }, item_offset)
     }
 
     // TODO: Don't export this.
@@ -1514,7 +1550,7 @@ impl<C: ListConfig> fmt::Debug for SkipList<C> where C::Item: fmt::Debug {
 pub struct Edit<'a, C: ListConfig, Notify: FnMut(&[C::Item], ItemMarker<C>)> {
     list: &'a mut SkipList<C>,
     cursor: Cursor<C>,
-    item_offset: usize, // Offset into the current item.
+    // item_offset: usize, // Offset into the current item.
     notify: Notify
 }
 // pub struct Edit<'a, C: ListConfig> {
@@ -1535,8 +1571,6 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
     }
 
     pub fn del(&mut self, num_items: usize) {
-        assert_eq!(self.item_offset, 0, "Splitting nodes not yet supported");
-
         unsafe { self.list.del_at_iter(&self.cursor, num_items); }
 
         if cfg!(debug_assertions) {
@@ -1548,39 +1582,46 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
     pub fn insert_iter<I>(&mut self, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
         if contents.len() == 0 { return; }
         let num_inserted_items = contents.len();
-        
-        // userpos = min(userpos, self.get_userlen());
-        // let (mut cursor, offset) = self.iter_at_userpos(userpos);
-
         let start_userpos = self.cursor.userpos;
 
         unsafe {
-            if self.item_offset == 0 {
-                self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
+            self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
 
-                self.dbg_check_cursor_at(start_userpos, num_inserted_items);
-            } else {
-                let current_item = self.cursor.current_item();
-                let (start, end) = C::split_item(current_item, self.item_offset);
-                // Move the cursor back to the start of the item we're
-                // splitting.
-                self.cursor.move_to_item_start(self.list.head.height, self.item_offset);
-                // This feels pretty inefficient; but its probably fine.
-                self.list.replace_item(&mut self.cursor, start, &mut self.notify);
+            self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+        }
+    }
 
-                // TODO: Consider concatenating end into contents then just call
-                // insert_at_iter once.
-                self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
+    pub fn insert_between_iter<I>(&mut self, offset: usize, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
+        if offset == 0 { return self.insert_iter(contents); }
 
-                self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+        let num_inserted_items = contents.len();
+        let start_userpos = self.cursor.userpos;
 
-                self.list.insert_at_iter(&mut self.cursor, &mut iter::once(end), &mut self.notify);
-            }
+        unsafe {
+            let current_item = self.cursor.current_item();
+            let (start, end) = C::split_item(current_item.unwrap(), offset);
+            // Move the cursor back to the start of the item we're
+            // splitting.
+            self.cursor.move_to_item_start(self.list.head.height, offset);
+            // This feels pretty inefficient; but its probably fine.
+            self.list.replace_item(&mut self.cursor, start, &mut self.notify);
+
+            // TODO: Consider concatenating end into contents then just call
+            // insert_at_iter once.
+            self.list.insert_at_iter(&mut self.cursor, &mut contents, &mut self.notify);
+
+            self.dbg_check_cursor_at(start_userpos, num_inserted_items);
+
+            self.list.insert_at_iter(&mut self.cursor, &mut iter::once(end), &mut self.notify);
         }
     }
 
     pub fn insert(&mut self, item: C::Item) {
         self.insert_iter(iter::once(item));
+    }
+
+    pub fn insert_between(&mut self, offset: usize, item: C::Item) {
+        self.insert_between_iter(offset, iter::once(item));
     }
 
     pub fn insert_slice(&mut self, items: &[C::Item]) where C::Item: Copy {
@@ -1589,8 +1630,6 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
 
     pub fn replace<I>(&mut self, removed_items: usize, mut inserted_content: I)
     where I: ExactSizeIterator<Item=C::Item> {
-        assert_eq!(self.item_offset, 0, "Splitting nodes not yet supported");
-
         let num_inserted_items = inserted_content.len();
         let start_userpos = self.cursor.userpos;
         
@@ -1599,33 +1638,23 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
         self.dbg_check_cursor_at(start_userpos, num_inserted_items);
     }
 
-    pub fn prev_item(&self) -> Option<(&C::Item, usize)> {
-        if self.item_offset == 0 {
-            if self.cursor.local_index == 0 {
-                // The only time a cursor should be at the start of the node is
-                // when the cursor is at the start of the entire list.
-                assert!(self.cursor.userpos == 0, "Invalid state: Cursor at start of node");
-                None
-            } else {
-                let prev_item = unsafe { self.cursor.prev_item() };
-                Some((prev_item, C::get_usersize(prev_item)))
-            }
-        } else {
-            Some((unsafe { self.cursor.current_item() }, self.item_offset))
-        }
+    pub fn prev_item(&self) -> Option<&C::Item> {
+        unsafe { self.cursor.prev_item() }
+    }
+
+    pub fn current_item(&self) -> Option<&C::Item> {
+        unsafe { self.cursor.current_item() }
     }
 
     pub fn advance_item(&mut self) {
         self.cursor.advance_item(self.list.head.height);
-        self.item_offset = 0;
     }
 
-    unsafe fn modify_item<F>(&mut self, modify_prev: bool, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        let item = if modify_prev { self.cursor.prev_item_mut() }
-        else { self.cursor.current_item_mut() };
+    pub fn modify_prev_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item) {
+        let item = unsafe { self.cursor.prev_item_mut() }.expect("Cursor at start of document. Cannot modify prev");
 
         let old_usersize = C::get_usersize(item);
-        modify_fn(item, self.item_offset);
+        modify_fn(item);
         let new_usersize = C::get_usersize(item);
 
         let usersize_delta = new_usersize as isize - old_usersize as isize;
@@ -1633,7 +1662,6 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
         if usersize_delta != 0 {
             self.cursor.update_offsets(self.list.height(), usersize_delta);
             self.list.num_usercount = self.list.num_usercount.wrapping_add(usersize_delta as usize);
-            self.item_offset = usize::max(self.item_offset, new_usersize);
         }
 
         (self.notify)(std::slice::from_ref(item), ItemMarker {
@@ -1642,22 +1670,15 @@ impl<'a, C: ListConfig, N: FnMut(&[C::Item], ItemMarker<C>)> Edit<'a, C, N> {
         });
     }
 
-    pub fn modify_prev_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        unsafe { self.modify_item(true, modify_fn); }
-    }
-
+    /// Caveat: This moves the cursor to the next item
     // TODO: Not sure if this function is correct. Needs tests!
-    pub fn modify_next_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item, usize) {
-        if self.cursor.is_at_node_end()
-        || (self.item_offset > 0 && self.item_offset >= C::get_usersize(unsafe { self.cursor.current_item() })) {
-            self.advance_item();
-        }
-
-        unsafe { self.modify_item(false, modify_fn); }
+    pub fn modify_current_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item) {
+        self.advance_item();
+        self.modify_prev_item(modify_fn);
     }
 
-    pub fn replace_item(&mut self, replacement: C::Item) {
-        self.modify_prev_item(|old, _offset| *old = replacement);
+    pub fn replace_prev_item(&mut self, replacement: C::Item) {
+        self.modify_prev_item(|old| *old = replacement);
     }
 }
 

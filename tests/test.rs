@@ -197,13 +197,13 @@ mod test {
     #[test]
     fn modify_item() {
         let mut list = SkipList::<TestConfigSized>::new_from_slice(&[5,4,3,2,1]);
-        list.modify_item_at(5, |item, offset| {
+        list.modify_item_after(5, |item, offset| {
             assert_eq!(offset, 0);
             *item = 10;
         });
         check(&list, &[5,10,3,2,1]);
 
-        list.modify_item_at(17, |item, offset| {
+        list.modify_item_after(17, |item, offset| {
             assert_eq!(offset, 2); // And check a non-zero offset.
             *item = 1;
         });
