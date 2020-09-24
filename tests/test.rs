@@ -47,7 +47,7 @@ mod test {
         let vec: Vec<C::Item> = list.into();
         assert_eq!(vec, expected);
         assert_eq!(list.len_items(), expected.len());
-        assert_eq!(list.get_userlen(), C::userlen_of_slice(expected));
+        assert_eq!(list.len_user(), C::userlen_of_slice(expected));
 
         // assert_eq!(list, SkipList::from(expected));
         // assert!(*r == SkipList::from(expected), "Rope comparison fails");
