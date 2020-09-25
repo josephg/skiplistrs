@@ -6,3 +6,5 @@ extern crate rand;
 // mod edittablestr;
 mod skiplist;
 pub use skiplist::*;
+mod api;
+pub use api::Edit;

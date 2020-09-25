@@ -210,6 +210,30 @@ mod test {
         check(&list, &[5,10,1,2,1]);
     }
 
+    #[test]
+    fn notify() {
+        #[derive(PartialEq)]
+        struct N {
+            count: u32,
+            last: ItemMarker<TestConfigFlat>
+        };
+        impl NotificationTarget<TestConfigFlat> for N {
+            fn notify(&mut self, items: &[u8], at_marker: ItemMarker<TestConfigFlat>) {
+                assert_eq!(items, &[123]);
+                self.count += 1; // Count
+                self.last = at_marker;
+            }
+        }
+
+        let mut notify_target = N { count: 0, last: ItemMarker::null() };
+
+        let mut list = SkipList::<TestConfigFlat, N>::new();
+        list.insert_at_slice_n(&mut notify_target, 0, &[123]);
+
+        assert_eq!(notify_target.count, 1);
+    }
+
+
 
     // Trashy non-performant implementation of the API for randomized testing.
     fn vec_find_userpos<C: ListConfig>(list: &Vec<C::Item>, target_userpos: usize) -> usize {
