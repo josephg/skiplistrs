@@ -8,3 +8,4 @@ mod skiplist;
 pub use skiplist::*;
 mod api;
 pub use api::Edit;
+pub use api::SimpleApi;

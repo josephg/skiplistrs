@@ -1391,8 +1391,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         // })
     }
 
-
-    // TODO: Don't export this.
+    // TODO: This is just for debugging. Do not export this.
     pub fn print(&self) where C::Item: std::fmt::Debug {
         println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.len_user(), self.head.height);
 

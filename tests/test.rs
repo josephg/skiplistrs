@@ -73,6 +73,7 @@ mod test {
         check(&list, &[1,2,3,4]);
     }
 
+
     #[test]
     fn simple_edits() {
         let mut list = SkipList::<TestConfigFlat>::new_from_slice(&[1,2,3,4]);
@@ -228,7 +229,7 @@ mod test {
         let mut notify_target = N { count: 0, last: ItemMarker::null() };
 
         let mut list = SkipList::<TestConfigFlat, N>::new();
-        list.insert_at_slice_n(&mut notify_target, 0, &[123]);
+        list.notify(&mut notify_target).insert_at_slice(0, &[123]);
 
         assert_eq!(notify_target.count, 1);
     }
