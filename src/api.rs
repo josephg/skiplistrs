@@ -1,16 +1,16 @@
 // This file contains the public facing editing API for skip lists.
 
 use std::iter;
-use {ListConfig, NotificationTarget, SkipList, Cursor, ItemMarker};
+use {ListConfig, NotifyTarget, SkipList, Cursor, ItemMarker};
 
-pub struct Edit<'a, C: ListConfig, N: NotificationTarget<C> = ()> {
+pub struct Edit<'a, C: ListConfig, N: NotifyTarget<C> = ()> {
     list: &'a mut SkipList<C, N>,
     cursor: Cursor<C>,
     // item_offset: usize, // Offset into the current item.
     notify: &'a mut N,
 }
 
-impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
+impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
     fn dbg_check_cursor_at(&self, userpos: usize, plus_items: usize) {
         if cfg!(debug_assertions) {
             let (mut c2, _) = self.list.cursor_at_userpos(userpos);
@@ -131,7 +131,7 @@ impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
     }
 }
 
-pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> where Self: Sized {
+pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> where Self: Sized {
     fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize);
 
     fn edit_exact(self, userpos: usize) -> Edit<'a, C, N>;
@@ -179,7 +179,7 @@ impl<'a, C: 'a + ListConfig> SimpleApi<'a, C, ()> for &'a mut SkipList<C> {
     }
 }
 
-impl<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> SimpleApi<'a, C, N> for (&'a mut SkipList<C, N>, &'a mut N) {
+impl<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> SimpleApi<'a, C, N> for (&'a mut SkipList<C, N>, &'a mut N) {
     fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize) {
         let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         (Edit { list: self.0, cursor, notify: self.1 }, item_offset)
@@ -205,7 +205,7 @@ impl<C: ListConfig> SkipList<C> {
     }
 }
 
-impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
+impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     pub fn notify<'a>(&'a mut self, notify: &'a mut N) -> (&'a mut Self, &'a mut N) {
         (self, notify)
     }

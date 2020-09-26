@@ -218,7 +218,7 @@ mod test {
             count: u32,
             last: ItemMarker<TestConfigFlat>
         };
-        impl NotificationTarget<TestConfigFlat> for N {
+        impl NotifyTarget<TestConfigFlat> for N {
             fn notify(&mut self, items: &[u8], at_marker: ItemMarker<TestConfigFlat>) {
                 assert_eq!(items, &[1,2,3]);
                 self.count += 1; // Count

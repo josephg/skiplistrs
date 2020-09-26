@@ -98,7 +98,7 @@ pub trait ListConfig {
     
 }
 
-pub trait NotificationTarget<C: ListConfig> {
+pub trait NotifyTarget<C: ListConfig> {
     /// To turn off bookkeeping related to ItemMarker query lookups. The
     /// optimizer will inline this
     fn notifications_used() -> bool { true }
@@ -106,7 +106,7 @@ pub trait NotificationTarget<C: ListConfig> {
     fn notify(&mut self, items: &[C::Item], at_marker: ItemMarker<C>);
 }
 
-impl<C: ListConfig> NotificationTarget<C> for () {
+impl<C: ListConfig> NotifyTarget<C> for () {
     fn notifications_used() -> bool { false }
     fn notify(&mut self, _items: &[C::Item], _at_marker: ItemMarker<C>) {}
 }
@@ -207,7 +207,7 @@ fn random_height<R: RngCore>(rng: &mut R) -> u8 {
 }
 
 #[repr(C)]
-pub struct SkipList<C: ListConfig, N: NotificationTarget<C> = ()> {
+pub struct SkipList<C: ListConfig, N: NotifyTarget<C> = ()> {
     // TODO: Consider putting the head item on the heap. For the use case here
     // its almost certainly fine either way. The code feels a bit cleaner if its
     // on the heap (and then iterators will be able to outlast a move of the
@@ -547,14 +547,14 @@ impl<C: ListConfig> fmt::Debug for Cursor<C> {
 
 // None of the rust builtins give me what I want, which is a copy-free iterator
 // to owned items in a MaybeUninit array. Eh; its easy enough to make my own.
-struct UninitOwnedIter<'a, C: ListConfig, N: NotificationTarget<C>> {
+struct UninitOwnedIter<'a, C: ListConfig, N: NotifyTarget<C>> {
     // Based on the core slice IterMut implementation.
     ptr: NonNull<C::Item>,
     end: *mut C::Item,
     _marker: PhantomData<&'a SkipList<C, N>>
 }
 
-impl<'a, C: ListConfig, N: NotificationTarget<C>> UninitOwnedIter<'a, C, N> {
+impl<'a, C: ListConfig, N: NotifyTarget<C>> UninitOwnedIter<'a, C, N> {
     /// Make a slice we can iterate from and steal data from without dropping
     /// content. This is unsafe:
     ///
@@ -576,7 +576,7 @@ impl<'a, C: ListConfig, N: NotificationTarget<C>> UninitOwnedIter<'a, C, N> {
     }
 }
 
-impl<'a, C: ListConfig, N: NotificationTarget<C>> Iterator for UninitOwnedIter<'a, C, N> {
+impl<'a, C: ListConfig, N: NotifyTarget<C>> Iterator for UninitOwnedIter<'a, C, N> {
     type Item = C::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -612,7 +612,7 @@ unsafe fn maybeinit_slice_get_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
 }
 
 
-impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
+impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     pub fn new() -> Self {
         SkipList::<C, N> {
             num_items: 0,
@@ -1429,7 +1429,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
 
 
 
-impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> where C::Item: PartialEq {
+impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> where C::Item: PartialEq {
     pub fn eq_list(&self, other: &[C::Item]) -> bool {
         let mut pos = 0;
         let other_len = other.len();
@@ -1448,7 +1448,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> where C::Item: Part
     }
 }
 
-impl<C: ListConfig, N: NotificationTarget<C>> Drop for SkipList<C, N> {
+impl<C: ListConfig, N: NotifyTarget<C>> Drop for SkipList<C, N> {
     fn drop(&mut self) {
         let mut node = self.head.first_skip_entry().node;
         unsafe {
@@ -1469,7 +1469,7 @@ impl<I, C: ListConfig> From<I> for SkipList<C> where I: ExactSizeIterator<Item=C
     }
 }
 
-impl<C: ListConfig, N: NotificationTarget<C>> Into<Vec<C::Item>> for &SkipList<C, N> where C::Item: Copy {
+impl<C: ListConfig, N: NotifyTarget<C>> Into<Vec<C::Item>> for &SkipList<C, N> where C::Item: Copy {
     fn into(self) -> Vec<C::Item> {
         let mut content: Vec<C::Item> = Vec::with_capacity(self.num_items);
 
@@ -1481,13 +1481,13 @@ impl<C: ListConfig, N: NotificationTarget<C>> Into<Vec<C::Item>> for &SkipList<C
     }
 }
 
-impl<C: ListConfig, N: NotificationTarget<C>> fmt::Debug for SkipList<C, N> where C::Item: fmt::Debug {
+impl<C: ListConfig, N: NotifyTarget<C>> fmt::Debug for SkipList<C, N> where C::Item: fmt::Debug {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-impl<C: ListConfig, N: NotificationTarget<C>> Default for SkipList<C, N> {
+impl<C: ListConfig, N: NotifyTarget<C>> Default for SkipList<C, N> {
     fn default() -> Self {
         SkipList::new()
     }
