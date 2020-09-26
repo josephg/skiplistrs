@@ -129,6 +129,10 @@ impl<'a, Item: ListItem, N: NotifyTarget<Item>> Edit<'a, Item, N> {
     pub fn replace_prev_item(&mut self, replacement: Item) {
         self.modify_prev_item(|old| *old = replacement);
     }
+
+    pub fn user_position(&self) -> usize {
+        self.cursor.userpos
+    }
 }
 
 pub trait SimpleApi<'a, Item: 'a + ListItem, N: 'a + NotifyTarget<Item>> where Self: Sized {
@@ -236,9 +240,10 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
     /// If your code is correct, it is usually correct behaviour .unwrap() the
     /// returned value.
     ///
-    /// SAFETY: The marker must have been updated using the notifier for the
-    /// specified items. If you pass an out of date marker, behaviour is
-    /// undefined. (It might segfault.)
+    /// # Safety
+    /// The marker must have been updated using the notifier for the specified
+    /// items. If you pass an out of date marker, behaviour is undefined. (It
+    /// might segfault.)
     pub unsafe fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<Edit<'a, Item, N>>
     where P: Fn(&Item) -> bool {
         self.cursor_at_marker(marker, |item| if predicate(item) { Some(0) } else { None })
@@ -257,9 +262,10 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
     /// If your predicate function is correct, it should be safe to .unwrap()
     /// the result.
     ///
-    /// SAFETY: The marker must have been updated using the notifier for the
-    /// specified items. If you pass an out of date marker, behaviour is
-    /// undefined. (It might segfault.)
+    /// # Safety
+    /// The marker must have been updated using the notifier for the specified
+    /// items. If you pass an out of date marker, behaviour is undefined. (It
+    /// might segfault.)
     pub unsafe fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<(Edit<'a, Item, N>, usize)>
     where P: Fn(&Item) -> Option<usize> {
         self.cursor_at_marker(marker, predicate)
@@ -267,4 +273,9 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
             (Edit { list: self, cursor, notify }, item_offset)
         })
     }
+
+    // TODO: We can make an optimized version of this without filling in a cursor.
+    // pub unsafe fn position_at_marker(&self, marker: ItemMarker<Item>, predicate: impl Fn(&Item) -> bool) -> Option<usize> {
+
+    // }
 }
