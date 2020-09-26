@@ -17,15 +17,12 @@ mod test {
 
     use std::iter;
 
-    // fn clone<Item, T>(slice: &[T]) -> Vec<Item> where Item: From<T>, T: Copy {
-    //     slice.iter().copied().map(|t| Item::from(t)).collect()
-    // }
-
-    fn as_item<'a, Item, T>(slice: &'a [T]) -> impl 'a + ExactSizeIterator<Item=Item> where Item: From<T>, T: Copy {
+    fn as_item<'a, Item, T>(slice: &'a [T]) -> impl 'a + ExactSizeIterator<Item=Item>
+    where Item: From<T>, T: Copy {
         slice.iter().map(|t| Item::from(*t))
     }
 
-    // This config makes all items take up the same amount of space.
+    // This makes each item have usersize of 1.
     #[derive(Debug, PartialEq, Eq, Copy, Clone)]
     struct FlatItem(u8);
     impl ListItem for FlatItem {}
@@ -410,7 +407,7 @@ mod test {
     fn inserted_contents_dropped() {
         let td = TestDrop::new();
         let (id, item) = td.new_item();
-        let mut list = SkipList::new_from_iter(iter::once(DropItem(item)));
+        let list = SkipList::new_from_iter(iter::once(DropItem(item)));
         
         drop(list);
         td.assert_drop(id);
