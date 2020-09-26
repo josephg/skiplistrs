@@ -13,7 +13,7 @@ pub struct Edit<'a, C: ListConfig, N: NotificationTarget<C> = ()> {
 impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
     fn dbg_check_cursor_at(&self, userpos: usize, plus_items: usize) {
         if cfg!(debug_assertions) {
-            let (mut c2, _) = self.list.iter_at_userpos(userpos);
+            let (mut c2, _) = self.list.cursor_at_userpos(userpos);
             c2.advance_by_items(plus_items, self.list.height());
             assert_eq!(&self.cursor, &c2);
         }
@@ -23,7 +23,7 @@ impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
         unsafe { self.list.del_at_iter(&self.cursor, num_items); }
 
         if cfg!(debug_assertions) {
-            let (c2, _) = self.list.iter_at_userpos(self.cursor.userpos);
+            let (c2, _) = self.list.cursor_at_userpos(self.cursor.userpos);
             if &self.cursor != &c2 { panic!("Invalid cursor after delete"); }
         }
     }
@@ -168,12 +168,12 @@ static mut NULL_NOTIFY_TARGET: () = ();
 
 impl<'a, C: 'a + ListConfig> SimpleApi<'a, C, ()> for &'a mut SkipList<C> {
     fn edit(self, userpos: usize) -> (Edit<'a, C>, usize) {
-        let (cursor, item_offset) = self.iter_at_userpos(userpos);
+        let (cursor, item_offset) = self.cursor_at_userpos(userpos);
         (Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }, item_offset)
     }
 
     fn edit_between(self, userpos: usize) -> Edit<'a, C> {
-        let (cursor, item_offset) = self.iter_at_userpos(userpos);
+        let (cursor, item_offset) = self.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }
     }
@@ -181,12 +181,12 @@ impl<'a, C: 'a + ListConfig> SimpleApi<'a, C, ()> for &'a mut SkipList<C> {
 
 impl<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> SimpleApi<'a, C, N> for (&'a mut SkipList<C, N>, &'a mut N) {
     fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize) {
-        let (cursor, item_offset) = self.0.iter_at_userpos(userpos);
+        let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         (Edit { list: self.0, cursor, notify: self.1 }, item_offset)
     }
 
     fn edit_between(self, userpos: usize) -> Edit<'a, C, N> {
-        let (cursor, item_offset) = self.0.iter_at_userpos(userpos);
+        let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self.0, cursor, notify: self.1 }
     }

@@ -688,6 +688,11 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         node as *const _ == &self.head as *const _
     }
 
+    #[inline(always)]
+    fn use_parents() -> bool {
+        cfg!(debug_assertions) || N::notifications_used()
+    }
+
     /// Walk the list and validate internal constraints. This is used for
     /// testing the structure itself, and should generally not be called by
     /// users.
@@ -726,21 +731,17 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
                 let local_count = C::userlen_of_slice(n.content_slice());
                 assert_eq!(local_count, n.get_userlen());
 
-                let expect_parent = if self.is_head(n) {
-                    ptr::null() // The head's parent is null
-                } else if n.height == self.head.height {
-                    &self.head as *const _ // Max height nodes point back to head
-                } else {
-                    prev[n.height as usize]
-                };
+                if Self::use_parents() {
+                    let expect_parent = if self.is_head(n) {
+                        ptr::null() // The head's parent is null
+                    } else if n.height == self.head.height {
+                        &self.head as *const _ // Max height nodes point back to head
+                    } else {
+                        prev[n.height as usize]
+                    };
 
-                // println!("visiting {} {:?}", i, n as *const _);
-                // dbg!(n as *const _);
-                // dbg!((n as *const _, (*n).height));
-                // dbg!(n.parent);
-                // dbg!(&self.head as *const _);
-
-                assert_eq!(n.parent as *const _, expect_parent, "invalid parent");
+                    assert_eq!(n.parent as *const _, expect_parent, "invalid parent");
+                }
                 
                 for (i, entry) in iter[0..n.height as usize].iter_mut().enumerate() {
                     assert_eq!(entry.node as *const _, n as *const _);
@@ -756,17 +757,20 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
                 num_usercount += n.get_userlen();
 
                 // Check the value returned by the iterator functions matches.
-                let (mut normal_iter, local_offset) = self.iter_at_userpos(num_usercount);
+                let (mut normal_iter, local_offset) = self.cursor_at_userpos(num_usercount);
                 assert_eq!(local_offset, 0);
+                assert_eq!(normal_iter.userpos, num_usercount);
 
                 // Dirty hack. If n has 0-sized elements at the end, the normal
                 // cursor won't be at the end...
-                while normal_iter.here_ptr() != n as *const _ as *mut _ {
-                    normal_iter.advance_node();
+                if Self::use_parents() {
+                    while normal_iter.here_ptr() != n as *const _ as *mut _ {
+                        normal_iter.advance_node();
+                    }
+                    normal_iter.local_index = n.num_items as usize;
+                    let node_iter = unsafe { self.cursor_at_node(n, n.get_userlen(), n.num_items as usize) };
+                    assert_eq!(normal_iter, node_iter);
                 }
-                normal_iter.local_index = n.num_items as usize;
-                let node_iter = unsafe { self.iter_at_node(n, n.get_userlen(), n.num_items as usize) };
-                assert_eq!(normal_iter, node_iter);
             }
 
             for entry in iter[0..self.height()].iter() {
@@ -800,7 +804,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
     /// Returns (cursor, offset into the specified item).
     ///
     /// TODO: This should be Pin<&self>.
-    pub(super) fn iter_at_userpos(&self, target_userpos: usize) -> (Cursor<C>, usize) {
+    pub(super) fn cursor_at_userpos(&self, target_userpos: usize) -> (Cursor<C>, usize) {
         assert!(target_userpos <= self.len_user());
 
         let mut e: *const Node<C> = &self.head;
@@ -863,7 +867,9 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         (cursor, offset)
     }
 
-    unsafe fn iter_at_node(&self, n: *const Node<C>, mut offset: usize, local_index: usize) -> Cursor<C> {
+    unsafe fn cursor_at_node(&self, n: *const Node<C>, mut offset: usize, local_index: usize) -> Cursor<C> {
+        assert!(Self::use_parents(), "cursor_at_node not available if notifications are disabled");
+
         let mut n = n as *mut Node<C>; // We don't mutate, but we need a mut ptr.
 
         let mut cursor = Cursor {
@@ -914,7 +920,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
 
     /// SAFETY: Self must outlast the marker and not have been moved since the
     /// marker was created. Self should really be Pin<>!
-    pub(super) unsafe fn iter_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
+    pub(super) unsafe fn cursor_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
         // The marker gives us a pointer into a node. Find the item.
         let n = marker.ptr;
 
@@ -931,7 +937,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         }
 
         let local_index = local_index.expect("Invalid marker - item not found in node");
-        self.iter_at_node(n, offset, local_index)
+        self.cursor_at_node(n, offset, local_index)
     }
 
     // Internal fn to create a new node at the specified iterator filled with
@@ -1013,8 +1019,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         }
 
         // Update parents.
-        if new_height_usize > 1 {
-
+        if Self::use_parents() && new_height_usize > 1 {
             let mut n = new_node_ptr;
             let mut skip_height = 0;
 
@@ -1261,7 +1266,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
                 self.num_usercount -= removed_userlen;
 
                 // Update parents.
-                if height > 1 {
+                if Self::use_parents() && height > 1 {
                     let mut n = e;
                     // let new_parent = cursor.entries[height - 1].node;
 
