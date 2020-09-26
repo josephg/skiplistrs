@@ -200,8 +200,8 @@ impl<Item: ListItem> SkipList<Item> {
         list
     }
 
-    pub fn new_from_slice<T: Copy + Into<Item>>(s: &[T]) -> Self {
-        Self::new_from_iter(s.iter().copied().map(|t| t.into()))
+    pub fn new_from_slice(s: &[Item]) -> Self where Item: Copy {
+        Self::new_from_iter(s.iter().copied())
     }
 }
 
@@ -228,21 +228,42 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
         (self, notify).edit_exact(userpos)
     }
 
-    pub fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<Edit<'a, Item, N>>
+    /// Get an edit object at the specified marker. This variant simply looks
+    /// for a matching item. The returned edit object will point to the item
+    /// matched by the predicate function.
+    ///
+    /// Returns None if the predicate did not match any items inside the node.
+    /// If your code is correct, it is usually correct behaviour .unwrap() the
+    /// returned value.
+    ///
+    /// SAFETY: The marker must have been updated using the notifier for the
+    /// specified items. If you pass an out of date marker, behaviour is
+    /// undefined. (It might segfault.)
+    pub unsafe fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<Edit<'a, Item, N>>
     where P: Fn(&Item) -> bool {
-        unsafe {
-            self.cursor_at_marker(marker, |item| if predicate(item) { Some(0) } else { None })
-        }.map(move |(cursor, item_offset)| {
+        self.cursor_at_marker(marker, |item| if predicate(item) { Some(0) } else { None })
+        .map(move |(cursor, item_offset)| {
             debug_assert_eq!(item_offset, 0, "Internal consistency violation");
             Edit { list: self, cursor, notify }
         })
     }
 
-    pub fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<(Edit<'a, Item, N>, usize)>
+    /// Get an edit object at the specified marker. Unlike
+    /// [`edit_at_marker_exact`], this method allows the predicate to return an
+    /// offset into the item (if it is found). This offset is returned, along
+    /// with the edit object.
+    ///
+    /// Returns None if the predicate did not match any items inside the node.
+    /// If your predicate function is correct, it should be safe to .unwrap()
+    /// the result.
+    ///
+    /// SAFETY: The marker must have been updated using the notifier for the
+    /// specified items. If you pass an out of date marker, behaviour is
+    /// undefined. (It might segfault.)
+    pub unsafe fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<(Edit<'a, Item, N>, usize)>
     where P: Fn(&Item) -> Option<usize> {
-        unsafe {
-            self.cursor_at_marker(marker, predicate)
-        }.map(move |(cursor, item_offset)| {
+        self.cursor_at_marker(marker, predicate)
+        .map(move |(cursor, item_offset)| {
             (Edit { list: self, cursor, notify }, item_offset)
         })
     }

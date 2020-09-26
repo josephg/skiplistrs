@@ -92,6 +92,37 @@ pub trait ListItem: Sized {
     }
 }
 
+// Blanket implementations for some common builtin types, because its impossible
+// to add these later. These make every item have a size of 1.
+impl ListItem for () {}
+impl<X, Y> ListItem for (X, Y) {}
+impl<X, Y, Z> ListItem for (X, Y, Z) {}
+impl<V> ListItem for Option<V> {}
+impl<T, E> ListItem for Result<T, E> {}
+
+impl<X, Y> ListItem for &(X, Y) {}
+impl<X, Y, Z> ListItem for &(X, Y, Z) {}
+impl<V> ListItem for &Option<V> {}
+impl<T, E> ListItem for &Result<T, E> {}
+
+impl ListItem for u8 {}
+impl ListItem for i8 {}
+impl ListItem for u16 {}
+impl ListItem for i16 {}
+impl ListItem for u32 {}
+impl ListItem for i32 {}
+impl ListItem for f32 {}
+impl ListItem for f64 {}
+
+impl ListItem for &u8 {}
+impl ListItem for &i8 {}
+impl ListItem for &u16 {}
+impl ListItem for &i16 {}
+impl ListItem for &u32 {}
+impl ListItem for &i32 {}
+impl ListItem for &f32 {}
+impl ListItem for &f64 {}
+
 pub trait NotifyTarget<Item: ListItem> {
     /// To turn off bookkeeping related to ItemMarker query lookups. The
     /// optimizer will inline this
@@ -184,9 +215,7 @@ pub(super) struct Node<Item: ListItem> {
 #[test]
 fn test_align() {
     struct Item(u8);
-    impl ListItem for Item {
-        fn get_usersize(&self) -> usize { 1 }
-    }
+    impl ListItem for Item {}
     #[repr(C)] struct Check([SkipEntry<Item>; 0]);
     assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry<Item>>());
     // TODO: It'd be good to also check the alignment of the nexts field in Node.

@@ -17,24 +17,9 @@ mod test {
 
     use std::iter;
 
-    fn as_item<'a, Item, T>(slice: &'a [T]) -> impl 'a + ExactSizeIterator<Item=Item>
+    fn into_iter<'a, Item, T>(slice: &'a [T]) -> impl 'a + ExactSizeIterator<Item=Item>
     where Item: From<T>, T: Copy {
         slice.iter().map(|t| Item::from(*t))
-    }
-
-    // This makes each item have usersize of 1.
-    #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-    struct FlatItem(u8);
-    impl ListItem for FlatItem {}
-
-    impl PartialEq<u8> for FlatItem {
-        fn eq(&self, other: &u8) -> bool {
-            self.0 == *other
-        }
-    }
-
-    impl From<u8> for FlatItem {
-        fn from(x: u8) -> Self { FlatItem(x) }
     }
 
     // Here each item names how much space it takes up, so we can try complex
@@ -70,7 +55,7 @@ mod test {
     fn check2<'a, Item: ListItem, T>(list: &SkipList<Item>, expected: &'a [T])
         where Item: Debug + Copy + PartialEq + From<T>, T: Copy {
         // This is super gross.
-        let copy: Vec<Item> = as_item(expected).collect();
+        let copy: Vec<Item> = into_iter(expected).collect();
         let expected = copy.as_slice();
 
         list.print();
@@ -95,12 +80,12 @@ mod test {
     #[test]
     fn sanity() {
         // Lets start by making sure the eq_list() method works right.
-        let list = SkipList::<FlatItem>::new();
+        let list = SkipList::<u8>::new();
         assert!(list.eq_list::<u8>(&[]));
         assert!(!list.eq_list(&[1]));
         check(&list, &[]);
         
-        let list = SkipList::<FlatItem>::new_from_slice(&[1,2,3,4]);
+        let list = SkipList::new_from_slice(&[1,2,3,4]);
         assert!(list.eq_list(&[1,2,3,4]));
         assert!(!list.eq_list(&[1,2,3,5]));
         assert!(!list.eq_list(&[1,2,3]));
@@ -110,19 +95,19 @@ mod test {
 
     #[test]
     fn simple_edits() {
-        let mut list = SkipList::<FlatItem>::new_from_slice(&[1,2,3,4]);
+        let mut list = SkipList::<u8>::new_from_slice(&[1,2,3,4]);
         check(&list, &[1,2,3,4]);
         
         list.del_at(1, 2);
         check(&list, &[1,4]);
         
-        list.replace_at(1, 1, as_item(&[5,6,7]));
+        list.replace_at_slice(1, 1, &[5,6,7]);
         check(&list, &[1,5,6,7]);
     }
     
     #[test]
     fn empty_list_has_no_contents() {
-        let mut list = SkipList::<FlatItem>::new();
+        let mut list = SkipList::<u8>::new();
         check(&list, &[]);
 
         list.insert_at_slice(0, &[]);
@@ -131,32 +116,32 @@ mod test {
 
     #[test]
     fn insert_at_location() {
-        let mut list = SkipList::<FlatItem>::new();
+        let mut list = SkipList::<u8>::new();
 
-        list.insert_at(0, as_item(&[1,1,1]));
+        list.insert_at_slice(0, &[1,1,1]);
         check(&list, &[1,1,1]);
         
-        list.insert_at(0, as_item(&[2,2,2]));
+        list.insert_at_slice(0, &[2,2,2]);
         check(&list, &[2,2,2,1,1,1]);
         
-        list.insert_at(6, as_item(&[3,3,3]));
+        list.insert_at_slice(6, &[3,3,3]);
         check(&list, &[2,2,2,1,1,1,3,3,3]);
         
-        list.insert_at(5, as_item(&[4,4,4]));
+        list.insert_at_slice(5, &[4,4,4]);
         check(&list, &[2,2,2,1,1,4,4,4,1,3,3,3]);
     }
 
     #[test]
     fn insert_between() {
-        let mut list = SkipList::<SizedItem>::new_from_slice(&[5,2]);
+        let mut list = SkipList::<SizedItem>::new_from_iter(into_iter(&[5,2]));
         
-        list.insert_at(1, as_item(&[10]));
+        list.insert_at(1, into_iter(&[10]));
         check(&list, &[1,10,4,2]);
     }
 
     #[test]
     fn del_at_location() {
-        let mut list = SkipList::<FlatItem>::new_from_slice(&[0,1,2,3,4,5,6,7,8]);
+        let mut list = SkipList::new_from_slice(&[0,1,2,3,4,5,6,7,8]);
 
         list.del_at(8, 1);
         check(&list, &[0,1,2,3,4,5,6,7]);
@@ -197,7 +182,7 @@ mod test {
 
         // let s = random_ascii_string(len);
 
-        let mut list = SkipList::<FlatItem>::new_from_slice(content.as_slice());
+        let mut list = SkipList::new_from_iter(content.clone().into_iter());
         check(&list, content.as_slice());
 
         // Delete everything but the first and last characters
@@ -210,19 +195,19 @@ mod test {
         let mut list = SkipList::<SizedItem>::new();
         check(&list, &[]);
         
-        list.insert_at(0, as_item(&[2,1]));
+        list.insert_at(0, into_iter(&[2,1]));
         check(&list, &[2,1]);
 
-        list.insert_at(2, as_item(&[0,0]));
+        list.insert_at(2, into_iter(&[0,0]));
         check(&list, &[2,0,0,1]);
         
-        list.insert_at(3, as_item(&[5]));
+        list.insert_at(3, into_iter(&[5]));
         check(&list, &[2,0,0,1,5]);
         
         list.del_at(3, 1);
         check(&list, &[2,0,0,1]);
 
-        list.insert_at(2, as_item(&[5,5])); // Inserted items go as far left as possible.
+        list.insert_at(2, into_iter(&[5,5])); // Inserted items go as far left as possible.
         check(&list, &[2,5,5,0,0,1]);
 
         list.del_at(12, 2);
@@ -231,7 +216,7 @@ mod test {
 
     #[test]
     fn modify_item() {
-        let mut list = SkipList::<SizedItem>::new_from_slice(&[5,4,3,2,1]);
+        let mut list = SkipList::<SizedItem>::new_from_iter(into_iter(&[5,4,3,2,1]));
         list.modify_item_after(5, |item, offset| {
             assert_eq!(offset, 0);
             item.0 = 10;
@@ -250,10 +235,10 @@ mod test {
         #[derive(PartialEq)]
         struct N {
             count: u32,
-            last: ItemMarker<FlatItem>
+            last: ItemMarker<u8>
         };
-        impl NotifyTarget<FlatItem> for N {
-            fn notify(&mut self, items: &[FlatItem], at_marker: ItemMarker<FlatItem>) {
+        impl NotifyTarget<u8> for N {
+            fn notify(&mut self, items: &[u8], at_marker: ItemMarker<u8>) {
                 assert_eq!(items, &[1,2,3]);
                 self.count += 1; // Count
                 self.last = at_marker;
@@ -262,18 +247,18 @@ mod test {
 
         let mut notify_target = N { count: 0, last: ItemMarker::null() };
 
-        let mut list = SkipList::<FlatItem, N>::new();
-        list.notify(&mut notify_target).insert_at(0, as_item(&[1,2,3]));
+        let mut list = SkipList::<u8, N>::new();
+        list.notify(&mut notify_target).insert_at(0, into_iter(&[1,2,3]));
 
         assert_eq!(notify_target.count, 1);
         
         let marker = notify_target.last;
-        let edit = list.edit_at_marker_exact(&mut notify_target, marker, |item| *item == 2).unwrap();
+        let edit = unsafe { list.edit_at_marker_exact(&mut notify_target, marker, |item| *item == 2) }.unwrap();
 
-        assert_eq!(edit.prev_item(), Some(&FlatItem(1)));
-        assert_eq!(edit.current_item(), Some(&FlatItem(2)));
+        assert_eq!(edit.prev_item(), Some(&1));
+        assert_eq!(edit.current_item(), Some(&2));
 
-        assert!(list.edit_at_marker(&mut notify_target, marker, |_item| None).is_none());
+        assert!(unsafe { list.edit_at_marker(&mut notify_target, marker, |_item| None) }.is_none());
     }
 
 
@@ -390,7 +375,7 @@ mod test {
 
     #[test]
     fn random_edits_flat() {
-        random_edits::<FlatItem>(|rng| FlatItem(rng.gen_range(0, 10)));
+        random_edits::<u8>(|rng| rng.gen_range(0, 10));
     }
 
     #[test]
