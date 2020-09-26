@@ -1,16 +1,16 @@
 // This file contains the public facing editing API for skip lists.
 
 use std::iter;
-use {ListConfig, NotifyTarget, SkipList, Cursor, ItemMarker};
+use {ListItem, NotifyTarget, SkipList, Cursor, ItemMarker};
 
-pub struct Edit<'a, C: ListConfig, N: NotifyTarget<C> = ()> {
-    list: &'a mut SkipList<C, N>,
-    cursor: Cursor<C>,
+pub struct Edit<'a, Item: ListItem, N: NotifyTarget<Item> = ()> {
+    list: &'a mut SkipList<Item, N>,
+    cursor: Cursor<Item>,
     // item_offset: usize, // Offset into the current item.
     notify: &'a mut N,
 }
 
-impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
+impl<'a, Item: ListItem, N: NotifyTarget<Item>> Edit<'a, Item, N> {
     fn dbg_check_cursor_at(&self, userpos: usize, plus_items: usize) {
         if cfg!(debug_assertions) {
             let (mut c2, _) = self.list.cursor_at_userpos(userpos);
@@ -28,7 +28,7 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
         }
     }
 
-    pub fn insert_iter<I>(&mut self, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
+    pub fn insert_iter<I>(&mut self, mut contents: I) where I: ExactSizeIterator<Item=Item> {
         if contents.len() == 0 { return; }
         let num_inserted_items = contents.len();
         let start_userpos = self.cursor.userpos;
@@ -40,7 +40,7 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
         }
     }
 
-    pub fn insert_between_iter<I>(&mut self, offset: usize, mut contents: I) where I: ExactSizeIterator<Item=C::Item> {
+    pub fn insert_between_iter<I>(&mut self, offset: usize, mut contents: I) where I: ExactSizeIterator<Item=Item> {
         if offset == 0 { return self.insert_iter(contents); }
 
         let num_inserted_items = contents.len();
@@ -48,7 +48,7 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
 
         unsafe {
             let current_item = self.cursor.current_item();
-            let (start, end) = C::split_item(current_item.unwrap(), offset);
+            let (start, end) = Item::split_item(current_item.unwrap(), offset);
             // Move the cursor back to the start of the item we're
             // splitting.
             self.cursor.move_to_item_start(self.list.height(), offset);
@@ -65,20 +65,20 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
         }
     }
 
-    pub fn insert(&mut self, item: C::Item) {
+    pub fn insert(&mut self, item: Item) {
         self.insert_iter(iter::once(item));
     }
 
-    pub fn insert_between(&mut self, offset: usize, item: C::Item) {
+    pub fn insert_between(&mut self, offset: usize, item: Item) {
         self.insert_between_iter(offset, iter::once(item));
     }
 
-    pub fn insert_slice(&mut self, items: &[C::Item]) where C::Item: Copy {
+    pub fn insert_slice(&mut self, items: &[Item]) where Item: Copy {
         self.insert_iter(items.iter().copied());
     }
 
     pub fn replace<I>(&mut self, removed_items: usize, mut inserted_content: I)
-    where I: ExactSizeIterator<Item=C::Item> {
+    where I: ExactSizeIterator<Item=Item> {
         let num_inserted_items = inserted_content.len();
         let start_userpos = self.cursor.userpos;
         
@@ -87,11 +87,11 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
         self.dbg_check_cursor_at(start_userpos, num_inserted_items);
     }
 
-    pub fn prev_item(&self) -> Option<&C::Item> {
+    pub fn prev_item(&self) -> Option<&Item> {
         unsafe { self.cursor.prev_item() }
     }
 
-    pub fn current_item(&self) -> Option<&C::Item> {
+    pub fn current_item(&self) -> Option<&Item> {
         unsafe { self.cursor.current_item() }
     }
 
@@ -99,12 +99,12 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
         self.cursor.advance_item(self.list.height());
     }
 
-    pub fn modify_prev_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item) {
+    pub fn modify_prev_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut Item) {
         let item = unsafe { self.cursor.prev_item_mut() }.expect("Cursor at start of document. Cannot modify prev");
 
-        let old_usersize = C::get_usersize(item);
+        let old_usersize = item.get_usersize();
         modify_fn(item);
-        let new_usersize = C::get_usersize(item);
+        let new_usersize = item.get_usersize();
 
         let usersize_delta = new_usersize as isize - old_usersize as isize;
 
@@ -121,41 +121,41 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Edit<'a, C, N> {
 
     /// Caveat: This moves the cursor to the next item
     // TODO: Not sure if this function is correct. Needs tests!
-    pub fn modify_current_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut C::Item) {
+    pub fn modify_current_item<F>(&mut self, modify_fn: F) where F: FnOnce(&mut Item) {
         self.advance_item();
         self.modify_prev_item(modify_fn);
     }
 
-    pub fn replace_prev_item(&mut self, replacement: C::Item) {
+    pub fn replace_prev_item(&mut self, replacement: Item) {
         self.modify_prev_item(|old| *old = replacement);
     }
 }
 
-pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> where Self: Sized {
-    fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize);
+pub trait SimpleApi<'a, Item: 'a + ListItem, N: 'a + NotifyTarget<Item>> where Self: Sized {
+    fn edit(self, userpos: usize) -> (Edit<'a, Item, N>, usize);
 
-    fn edit_exact(self, userpos: usize) -> Edit<'a, C, N>;
+    fn edit_exact(self, userpos: usize) -> Edit<'a, Item, N>;
 
 
-    fn replace_at<I: ExactSizeIterator<Item=C::Item>>(self, start_userpos: usize, removed_items: usize, inserted_content: I) {
+    fn replace_at<I: ExactSizeIterator<Item=Item>>(self, start_userpos: usize, removed_items: usize, inserted_content: I) {
         self.edit_exact(start_userpos).replace(removed_items, inserted_content);
     }
 
-    fn replace_at_slice(self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
+    fn replace_at_slice(self, start_userpos: usize, removed_items: usize, inserted_content: &[Item]) where Item: Copy {
         self.replace_at(start_userpos, removed_items, inserted_content.iter().copied());
     }
 
-    fn modify_item_after<F: FnOnce(&mut C::Item, usize)>(self, userpos: usize, modify_fn: F) {
+    fn modify_item_after<F: FnOnce(&mut Item, usize)>(self, userpos: usize, modify_fn: F) {
         let (mut edit, offset) = self.edit(userpos);
         edit.modify_current_item(|item| modify_fn(item, offset))
     }
 
-    fn insert_at<I: ExactSizeIterator<Item=C::Item>>(self, userpos: usize, contents: I) {
+    fn insert_at<I: ExactSizeIterator<Item=Item>>(self, userpos: usize, contents: I) {
         let (mut edit, offset) = self.edit(userpos);
         edit.insert_between_iter(offset, contents);
     }
 
-    fn insert_at_slice(self, userpos: usize, contents: &[C::Item]) where C::Item: Copy {
+    fn insert_at_slice(self, userpos: usize, contents: &[Item]) where Item: Copy {
         self.insert_at(userpos, contents.iter().copied())
     }
 
@@ -166,26 +166,26 @@ pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> where Self:
 
 static mut NULL_NOTIFY_TARGET: () = ();
 
-impl<'a, C: 'a + ListConfig> SimpleApi<'a, C, ()> for &'a mut SkipList<C> {
-    fn edit(self, userpos: usize) -> (Edit<'a, C>, usize) {
+impl<'a, Item: 'a + ListItem> SimpleApi<'a, Item, ()> for &'a mut SkipList<Item> {
+    fn edit(self, userpos: usize) -> (Edit<'a, Item>, usize) {
         let (cursor, item_offset) = self.cursor_at_userpos(userpos);
         (Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }, item_offset)
     }
 
-    fn edit_exact(self, userpos: usize) -> Edit<'a, C> {
+    fn edit_exact(self, userpos: usize) -> Edit<'a, Item> {
         let (cursor, item_offset) = self.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }
     }
 }
 
-impl<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> SimpleApi<'a, C, N> for (&'a mut SkipList<C, N>, &'a mut N) {
-    fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize) {
+impl<'a, Item: 'a + ListItem, N: 'a + NotifyTarget<Item>> SimpleApi<'a, Item, N> for (&'a mut SkipList<Item, N>, &'a mut N) {
+    fn edit(self, userpos: usize) -> (Edit<'a, Item, N>, usize) {
         let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         (Edit { list: self.0, cursor, notify: self.1 }, item_offset)
     }
 
-    fn edit_exact(self, userpos: usize) -> Edit<'a, C, N> {
+    fn edit_exact(self, userpos: usize) -> Edit<'a, Item, N> {
         let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self.0, cursor, notify: self.1 }
@@ -193,43 +193,43 @@ impl<'a, C: 'a + ListConfig, N: 'a + NotifyTarget<C>> SimpleApi<'a, C, N> for (&
 }
 
 // These methods are only available if there's no notification target.
-impl<C: ListConfig> SkipList<C> {
-    pub fn new_from_iter<I: ExactSizeIterator<Item=C::Item>>(iter: I) -> Self {
+impl<Item: ListItem> SkipList<Item> {
+    pub fn new_from_iter<I: ExactSizeIterator<Item=Item>>(iter: I) -> Self {
         let mut list = Self::new();
         list.insert_at(0, iter);
         list
     }
 
-    pub fn new_from_slice(s: &[C::Item]) -> Self where C::Item: Copy {
-        Self::new_from_iter(s.iter().copied())
+    pub fn new_from_slice<T: Copy + Into<Item>>(s: &[T]) -> Self {
+        Self::new_from_iter(s.iter().copied().map(|t| t.into()))
     }
 }
 
-impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
+impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
     pub fn notify<'a>(&'a mut self, notify: &'a mut N) -> (&'a mut Self, &'a mut N) {
         (self, notify)
     }
 
-    pub fn new_from_iter_n<I: ExactSizeIterator<Item=C::Item>>(notify: &mut N, iter: I) -> Self {
+    pub fn new_from_iter_n<I: ExactSizeIterator<Item=Item>>(notify: &mut N, iter: I) -> Self {
         let mut list = Self::new();
         list.notify(notify).insert_at(0, iter);
         list
     }
 
-    pub fn new_from_slice_n(notify: &mut N, s: &[C::Item]) -> Self where C::Item: Copy {
+    pub fn new_from_slice_n(notify: &mut N, s: &[Item]) -> Self where Item: Copy {
         Self::new_from_iter_n(notify, s.iter().copied())
     }
 
-    pub fn edit_n<'a>(&'a mut self, notify: &'a mut N, userpos: usize) -> (Edit<C, N>, usize) {
+    pub fn edit_n<'a>(&'a mut self, notify: &'a mut N, userpos: usize) -> (Edit<Item, N>, usize) {
         (self, notify).edit(userpos)
     }
 
-    pub fn edit_between_n<'a>(&'a mut self, notify: &'a mut N, userpos: usize) -> Edit<'a, C, N> {
+    pub fn edit_between_n<'a>(&'a mut self, notify: &'a mut N, userpos: usize) -> Edit<'a, Item, N> {
         (self, notify).edit_exact(userpos)
     }
 
-    pub fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<C>, predicate: P) -> Option<Edit<'a, C, N>>
-    where P: Fn(&C::Item) -> bool {
+    pub fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<Edit<'a, Item, N>>
+    where P: Fn(&Item) -> bool {
         unsafe {
             self.cursor_at_marker(marker, |item| if predicate(item) { Some(0) } else { None })
         }.map(move |(cursor, item_offset)| {
@@ -238,8 +238,8 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         })
     }
 
-    pub fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<C>, predicate: P) -> Option<(Edit<'a, C, N>, usize)>
-    where P: Fn(&C::Item) -> Option<usize> {
+    pub fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<Item>, predicate: P) -> Option<(Edit<'a, Item, N>, usize)>
+    where P: Fn(&Item) -> Option<usize> {
         unsafe {
             self.cursor_at_marker(marker, predicate)
         }.map(move |(cursor, item_offset)| {

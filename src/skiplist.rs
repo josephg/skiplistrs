@@ -45,23 +45,23 @@ const MAX_HEIGHT: usize = 10;
 
 const MAX_HEIGHT_U8: u8 = MAX_HEIGHT as u8; // convenience.
 
-pub struct ItemMarker<C: ListConfig> {
-    pub(super) ptr: *mut Node<C>,
+pub struct ItemMarker<Item: ListItem> {
+    pub(super) ptr: *mut Node<Item>,
     // _phantom: PhantomData<&'a SkipList<C>>
 }
 
 // Derive traits don't work here.
-impl<C: ListConfig> Clone for ItemMarker<C> {
+impl<Item: ListItem> Clone for ItemMarker<Item> {
     fn clone(&self) -> Self { *self }
 }
-impl<C: ListConfig> Copy for ItemMarker<C> {}
-impl<C: ListConfig> PartialEq for ItemMarker<C> {
+impl<Item: ListItem> Copy for ItemMarker<Item> {}
+impl<Item: ListItem> PartialEq for ItemMarker<Item> {
     fn eq(&self, other: &Self) -> bool { self.ptr == other.ptr }
 }
-impl<C: ListConfig> Eq for ItemMarker<C> {}
+impl<Item: ListItem> Eq for ItemMarker<Item> {}
 
-impl<C: ListConfig> ItemMarker<C> {
-    pub fn null() -> ItemMarker<C> {
+impl<Item: ListItem> ItemMarker<Item> {
+    pub fn null() -> ItemMarker<Item> {
         ItemMarker { ptr: ptr::null_mut() }
     }
 
@@ -70,53 +70,47 @@ impl<C: ListConfig> ItemMarker<C> {
     }
 }
 
-impl<C: ListConfig> Default for ItemMarker<C> {
+impl<Item: ListItem> Default for ItemMarker<Item> {
     fn default() -> Self { Self::null() }
 }
 
-/// The whole list is configured through a single generic trait parameter
-pub trait ListConfig {
-    type Item;
-    // type Item: std::fmt::Debug;
-
+pub trait ListItem: Sized {
     /// Applications which have custom sizes (or do their own
     /// run-length-encoding) can define their own size function for items. When
     /// items are inserted or replaced, the position is specified using the
     /// custom size defined here.
-    fn get_usersize(_item: &Self::Item) -> usize { 1 }
+    fn get_usersize(&self) -> usize { 1 }
 
-    fn userlen_of_slice(items: &[Self::Item]) -> usize {
+    fn userlen_of_slice(items: &[Self]) -> usize {
         items.iter().fold(0, |acc, item| {
             acc + Self::get_usersize(item)
         })
     }
 
-    fn split_item(_item: &Self::Item, _at: usize) -> (Self::Item, Self::Item) {
+    fn split_item(&self, _at: usize) -> (Self, Self) {
         unimplemented!("Cannot insert in the middle of an item - split_item is not defined in trait");
     }
-
-    
 }
 
-pub trait NotifyTarget<C: ListConfig> {
+pub trait NotifyTarget<Item: ListItem> {
     /// To turn off bookkeeping related to ItemMarker query lookups. The
     /// optimizer will inline this
     fn notifications_used() -> bool { true }
 
-    fn notify(&mut self, items: &[C::Item], at_marker: ItemMarker<C>);
+    fn notify(&mut self, items: &[Item], at_marker: ItemMarker<Item>);
 }
 
-impl<C: ListConfig> NotifyTarget<C> for () {
+impl<Item: ListItem> NotifyTarget<Item> for () {
     fn notifications_used() -> bool { false }
-    fn notify(&mut self, _items: &[C::Item], _at_marker: ItemMarker<C>) {}
+    fn notify(&mut self, _items: &[Item], _at_marker: ItemMarker<Item>) {}
 }
 
 /// This represents a single entry in either the nexts pointers list or in an
 /// iterator.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct SkipEntry<C: ListConfig> {
+pub(super) struct SkipEntry<Item: ListItem> {
     /// The node being pointed to.
-    node: *mut Node<C>,
+    node: *mut Node<Item>,
 
     /// The number of *items* between the start of the current node and the
     /// start of the next node. That means nexts entry 0 contains the length of
@@ -126,12 +120,12 @@ pub(super) struct SkipEntry<C: ListConfig> {
 
 // We can't use #[derive()] here for Copy and Clone due to a bug in the rust
 // compiler: https://github.com/rust-lang/rust/issues/26925
-impl<C: ListConfig> Copy for SkipEntry<C> {}
-impl<C: ListConfig> Clone for SkipEntry<C> {
+impl<Item: ListItem> Copy for SkipEntry<Item> {}
+impl<Item: ListItem> Clone for SkipEntry<Item> {
     fn clone(&self) -> Self { *self }
 }
 
-impl<C: ListConfig> SkipEntry<C> {
+impl<Item: ListItem> SkipEntry<Item> {
     fn new_null() -> Self {
         SkipEntry { node: ptr::null_mut(), skip_usersize: 0 }
     }
@@ -155,14 +149,14 @@ impl<C: ListConfig> SkipEntry<C> {
 /// next pointers. That might be lighter weight for the allocator because the
 /// struct itself would be a fixed size; but I'm not sure if it would be better.
 #[repr(C)] // Prevent parameter reordering.
-pub(super) struct Node<C: ListConfig> {
+pub(super) struct Node<Item: ListItem> {
     /// We start with the items themselves. Only the first `num_items` of this
     /// list is in use. The user specified length of the items in the node is
     /// stored in nexts[0].skip_items. This is initialized with
     /// Default::default() for the type, but when MaybeUninit completely lands,
     /// it will be possible to make this a tiny bit faster by leaving the list
     /// initially uninitialized.
-    items: [MaybeUninit<C::Item>; NODE_NUM_ITEMS],
+    items: [MaybeUninit<Item>; NODE_NUM_ITEMS],
 
     /// Number of items in `items` in use / filled.
     num_items: u8,
@@ -175,27 +169,26 @@ pub(super) struct Node<C: ListConfig> {
     /// that we need to be able to figure out at each level of the nexts
     /// pointers which object points to us, and the offset from that element to
     /// the current element. Anyway, for markers to work we need this.
-    parent: *mut Node<C>,
+    parent: *mut Node<Item>,
 
     // #[repr(align(std::align_of::<SkipEntry>()))]
     
     /// In reality this array has the size of height, allocated using more or
     /// less direct calls to malloc() at runtime based on the randomly generated
     /// size. The size is always at least 1.
-    nexts: [SkipEntry<C>; 0],
+    nexts: [SkipEntry<Item>; 0],
 }
 
 // Make sure nexts uses correct alignment. This should be guaranteed by repr(C)
 // This test will fail if this ever stops being true.
 #[test]
 fn test_align() {
-    struct TestConfig;
-    impl ListConfig for TestConfig {
-        type Item = u8;
-        fn get_usersize(_item: &Self::Item) -> usize { 1 }
+    struct Item(u8);
+    impl ListItem for Item {
+        fn get_usersize(&self) -> usize { 1 }
     }
-    #[repr(C)] struct Check([SkipEntry<TestConfig>; 0]);
-    assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry<TestConfig>>());
+    #[repr(C)] struct Check([SkipEntry<Item>; 0]);
+    assert!(mem::align_of::<Check>() >= mem::align_of::<SkipEntry<Item>>());
     // TODO: It'd be good to also check the alignment of the nexts field in Node.
 }
 
@@ -207,7 +200,7 @@ fn random_height<R: RngCore>(rng: &mut R) -> u8 {
 }
 
 #[repr(C)]
-pub struct SkipList<C: ListConfig, N: NotifyTarget<C> = ()> {
+pub struct SkipList<Item: ListItem, N: NotifyTarget<Item> = ()> {
     // TODO: Consider putting the head item on the heap. For the use case here
     // its almost certainly fine either way. The code feels a bit cleaner if its
     // on the heap (and then iterators will be able to outlast a move of the
@@ -233,7 +226,7 @@ pub struct SkipList<C: ListConfig, N: NotifyTarget<C> = ()> {
 
     /// The first node is inline. The height is 1 more than the max height we've
     /// ever used. The highest next entry points to {null, total usersize}.
-    head: Node<C>,
+    head: Node<Item>,
 
     /// This is so dirty. The first node is embedded in SkipList; but we need to
     /// allocate enough room for height to get arbitrarily large. I could insist
@@ -243,22 +236,22 @@ pub struct SkipList<C: ListConfig, N: NotifyTarget<C> = ()> {
     /// So this struct is repr(C) and I'm just padding out the struct directly.
     /// All accesses should go through head because otherwise I think we violate
     /// aliasing rules.
-    _nexts_padding: [SkipEntry<C>; MAX_HEIGHT],
+    _nexts_padding: [SkipEntry<Item>; MAX_HEIGHT],
 
     _phantom: PhantomData<N>
 }
 
 
-impl<C: ListConfig> Node<C> {
+impl<Item: ListItem> Node<Item> {
     // Do I need to be explicit about the lifetime of the references being tied
     // to the lifetime of the node?
-    fn nexts(&self) -> &[SkipEntry<C>] {
+    fn nexts(&self) -> &[SkipEntry<Item>] {
         unsafe {
             std::slice::from_raw_parts(self.nexts.as_ptr(), self.height as usize)
         }
     }
 
-    fn nexts_mut(&mut self) -> &mut [SkipEntry<C>] {
+    fn nexts_mut(&mut self) -> &mut [SkipEntry<Item>] {
         unsafe {
             std::slice::from_raw_parts_mut(self.nexts.as_mut_ptr(), self.height as usize)
         }
@@ -266,15 +259,15 @@ impl<C: ListConfig> Node<C> {
 
     fn layout_with_height(height: u8) -> Layout {
         Layout::from_size_align(
-            mem::size_of::<Node<C>>() + mem::size_of::<SkipEntry<C>>() * (height as usize),
-            mem::align_of::<Node<C>>()).unwrap()
+            mem::size_of::<Node<Item>>() + mem::size_of::<SkipEntry<Item>>() * (height as usize),
+            mem::align_of::<Node<Item>>()).unwrap()
     }
 
-    fn alloc_with_height(height: u8) -> *mut Node<C> {
+    fn alloc_with_height(height: u8) -> *mut Node<Item> {
         assert!(height >= 1 && height <= MAX_HEIGHT_U8);
 
         unsafe {
-            let node = alloc(Self::layout_with_height(height)) as *mut Node<C>;
+            let node = alloc(Self::layout_with_height(height)) as *mut Node<Item>;
             node.write(Node {
                 items: uninit_items_array(),
                 num_items: 0,
@@ -291,26 +284,26 @@ impl<C: ListConfig> Node<C> {
         }
     }
 
-    fn alloc<R: RngCore>(rng: &mut R) -> *mut Node<C> {
+    fn alloc<R: RngCore>(rng: &mut R) -> *mut Node<Item> {
         Self::alloc_with_height(random_height(rng))
     }
 
-    unsafe fn free(p: *mut Node<C>) {
+    unsafe fn free(p: *mut Node<Item>) {
         ptr::drop_in_place(p); // We could just implement drop here, but this is cleaner.
         dealloc(p as *mut u8, Self::layout_with_height((*p).height));
     }
 
-    fn content_slice(&self) -> &[C::Item] {
+    fn content_slice(&self) -> &[Item] {
         let slice = &self.items[..self.num_items as usize];
         unsafe { maybeinit_slice_get_ref(slice) }
     }
 
     // The height is at least 1, so this is always valid.
-    fn first_skip_entry<'a>(&self) -> &'a SkipEntry<C> {
+    fn first_skip_entry<'a>(&self) -> &'a SkipEntry<Item> {
         unsafe { &*self.nexts.as_ptr() }
     }
 
-    fn first_skip_entry_mut<'a>(&mut self) -> &'a mut SkipEntry<C> {
+    fn first_skip_entry_mut<'a>(&mut self) -> &'a mut SkipEntry<Item> {
         unsafe { &mut *self.nexts.as_mut_ptr() }
     }
 
@@ -319,12 +312,12 @@ impl<C: ListConfig> Node<C> {
         self.first_skip_entry().skip_usersize
     }
     
-    fn get_next_ptr(&self) -> *mut Node<C> {
+    fn get_next_ptr(&self) -> *mut Node<Item> {
         self.first_skip_entry().node
     }
 }
 
-impl<C: ListConfig> Drop for Node<C> {
+impl<Item: ListItem> Drop for Node<Item> {
     fn drop(&mut self) {
         for item in &mut self.items[0..self.num_items as usize] {
             // Could instead call assume_init() on each item but this is
@@ -334,11 +327,11 @@ impl<C: ListConfig> Drop for Node<C> {
     }
 }
 
-struct NodeIter<'a, C: ListConfig>(Option<&'a Node<C>>);
-impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
-    type Item = &'a Node<C>;
+struct NodeIter<'a, Item: ListItem>(Option<&'a Node<Item>>);
+impl<'a, Item: ListItem> Iterator for NodeIter<'a, Item> {
+    type Item = &'a Node<Item>;
 
-    fn next(&mut self) -> Option<&'a Node<C>> {
+    fn next(&mut self) -> Option<&'a Node<Item>> {
         let prev = self.0;
         if let Some(n) = self.0 {
             *self = NodeIter(unsafe { n.get_next_ptr().as_ref() });
@@ -364,7 +357,7 @@ impl<'a, C: ListConfig> Iterator for NodeIter<'a, C> {
 /// - While a cursor is held the SkipList struct should be considered pinned and
 ///   must not be moved or deleted
 #[derive(Copy, Clone)]
-pub(crate) struct Cursor<C: ListConfig> {
+pub(crate) struct Cursor<Item: ListItem> {
     /// The global user position of the cursor in the entire list. This is used
     /// for when the max seen height increases, so we can populate previously
     /// unused entries in the cursor and in the head node.
@@ -379,7 +372,7 @@ pub(crate) struct Cursor<C: ListConfig> {
     /// current entry. This is used to resolve that ambiguity.
     pub(super) local_index: usize,
 
-    pub(super) entries: [SkipEntry<C>; MAX_HEIGHT],
+    pub(super) entries: [SkipEntry<Item>; MAX_HEIGHT],
 
     // TODO: The cursor can't outlive the skiplist, but doing this makes it
     // tricky to pass cursors around in the Skiplist type. There's probably a
@@ -387,7 +380,7 @@ pub(crate) struct Cursor<C: ListConfig> {
     // _marker: PhantomData<&'a SkipList<C>>,
 }
 
-impl<C: ListConfig> Cursor<C> {
+impl<Item: ListItem> Cursor<Item> {
     pub(super) fn update_offsets(&mut self, height: usize, by: isize) {
         for i in 0..height {
             unsafe {
@@ -403,7 +396,7 @@ impl<C: ListConfig> Cursor<C> {
 
     /// Move a cursor to the start of the next node. Returns the new node (or a
     /// nullptr if this is the end of the list).
-    fn advance_node(&mut self) -> *mut Node<C> {
+    fn advance_node(&mut self) -> *mut Node<Item> {
         unsafe {
             let SkipEntry { node: e, skip_usersize: offset } = self.entries[0];
             // offset tells us how far into the current element we are (in
@@ -437,7 +430,7 @@ impl<C: ListConfig> Cursor<C> {
 
     pub(super) fn advance_item(&mut self, height: usize) {
         if self.is_at_node_end() { self.advance_node(); }
-        let usersize = C::get_usersize(unsafe { self.current_item().unwrap() });
+        let usersize = unsafe { self.current_item() }.unwrap().get_usersize();
 
         for entry in &mut self.entries[0..height] {
             entry.skip_usersize += usersize;
@@ -457,7 +450,7 @@ impl<C: ListConfig> Cursor<C> {
         self.userpos -= offset;
     }
 
-    pub(super) unsafe fn prev_item<'a>(&self) -> Option<&'a C::Item> {
+    pub(super) unsafe fn prev_item<'a>(&self) -> Option<&'a Item> {
         let node = &*self.here_ptr();
         if self.local_index == 0 {
             assert_eq!(self.userpos, 0, "Invalid state: Cursor at start of node");
@@ -468,7 +461,7 @@ impl<C: ListConfig> Cursor<C> {
         }
     }
 
-    pub(super) unsafe fn prev_item_mut<'a>(&mut self) -> Option<&'a mut C::Item> {
+    pub(super) unsafe fn prev_item_mut<'a>(&mut self) -> Option<&'a mut Item> {
         let node = &mut *self.here_ptr();
         if self.local_index == 0 {
             assert_eq!(self.userpos, 0);
@@ -480,7 +473,7 @@ impl<C: ListConfig> Cursor<C> {
     }
 
     // Could be Option<NonNull<_>>...
-    pub(super) unsafe fn peek_next_item(&self) -> Option<*mut C::Item> {
+    pub(super) unsafe fn peek_next_item(&self) -> Option<*mut Item> {
         let next = (*self.here_ptr()).get_next_ptr();
         if next.is_null() { None }
         else {
@@ -489,7 +482,7 @@ impl<C: ListConfig> Cursor<C> {
         }
     }
 
-    pub(super) unsafe fn current_item<'a>(&self) -> Option<&'a C::Item> {
+    pub(super) unsafe fn current_item<'a>(&self) -> Option<&'a Item> {
         let node = &*self.here_ptr();
         if self.local_index < node.num_items as usize {
             // Ok - just return the current item.
@@ -512,12 +505,12 @@ impl<C: ListConfig> Cursor<C> {
     // }
 
     /// Get the pointer to the cursor's current node
-    pub(super) fn here_ptr(&self) -> *mut Node<C> {
+    pub(super) fn here_ptr(&self) -> *mut Node<Item> {
         self.entries[0].node
     }
 }
 
-impl<C: ListConfig> PartialEq for Cursor<C> {
+impl<Item: ListItem> PartialEq for Cursor<Item> {
     /// Warning: This returns false if one cursor is at the end of a node, and
     /// the other at the start of the next node. Almost all code in this library
     /// leaves cursors at the end of nodes, so this shouldn't matter too much in
@@ -534,9 +527,9 @@ impl<C: ListConfig> PartialEq for Cursor<C> {
         true
     }
 }
-impl<C: ListConfig> Eq for Cursor<C> {}
+impl<Item: ListItem> Eq for Cursor<Item> {}
 
-impl<C: ListConfig> fmt::Debug for Cursor<C> {
+impl<Item: ListItem> fmt::Debug for Cursor<Item> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cursor")
             .field("userpos", &self.userpos)
@@ -547,14 +540,14 @@ impl<C: ListConfig> fmt::Debug for Cursor<C> {
 
 // None of the rust builtins give me what I want, which is a copy-free iterator
 // to owned items in a MaybeUninit array. Eh; its easy enough to make my own.
-struct UninitOwnedIter<'a, C: ListConfig, N: NotifyTarget<C>> {
+struct UninitOwnedIter<'a, Item: ListItem, N: NotifyTarget<Item>> {
     // Based on the core slice IterMut implementation.
-    ptr: NonNull<C::Item>,
-    end: *mut C::Item,
-    _marker: PhantomData<&'a SkipList<C, N>>
+    ptr: NonNull<Item>,
+    end: *mut Item,
+    _marker: PhantomData<&'a SkipList<Item, N>>
 }
 
-impl<'a, C: ListConfig, N: NotifyTarget<C>> UninitOwnedIter<'a, C, N> {
+impl<'a, Item: ListItem, N: NotifyTarget<Item>> UninitOwnedIter<'a, Item, N> {
     /// Make a slice we can iterate from and steal data from without dropping
     /// content. This is unsafe:
     ///
@@ -564,8 +557,8 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> UninitOwnedIter<'a, C, N> {
     ///   will hit us.
     ///
     /// After iterating, the contents are uninit memory.
-    unsafe fn from_slice(slice: &[MaybeUninit<C::Item>]) -> Self {
-        let ptr = slice.as_ptr() as *mut C::Item; // Safe.
+    unsafe fn from_slice(slice: &[MaybeUninit<Item>]) -> Self {
+        let ptr = slice.as_ptr() as *mut Item; // Safe.
         let end = ptr.add(slice.len());
 
         UninitOwnedIter {
@@ -576,8 +569,8 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> UninitOwnedIter<'a, C, N> {
     }
 }
 
-impl<'a, C: ListConfig, N: NotifyTarget<C>> Iterator for UninitOwnedIter<'a, C, N> {
-    type Item = C::Item;
+impl<'a, Item: ListItem, N: NotifyTarget<Item>> Iterator for UninitOwnedIter<'a, Item, N> {
+    type Item = Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ptr.as_ptr() == self.end {
@@ -590,7 +583,7 @@ impl<'a, C: ListConfig, N: NotifyTarget<C>> Iterator for UninitOwnedIter<'a, C, 
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let size = (self.end as usize - self.ptr.as_ptr() as usize) / mem::size_of::<C::Item>();
+        let size = (self.end as usize - self.ptr.as_ptr() as usize) / mem::size_of::<Item>();
         (size, Some(size))
     }
 }
@@ -612,9 +605,9 @@ unsafe fn maybeinit_slice_get_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
 }
 
 
-impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
+impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
     pub fn new() -> Self {
-        SkipList::<C, N> {
+        SkipList::<Item, N> {
             num_items: 0,
             num_usercount: 0,
             rng: None,
@@ -656,9 +649,9 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         self.num_items as usize
     }
 
-    fn node_iter(&self) -> NodeIter<C> { NodeIter(Some(&self.head)) }
+    fn node_iter(&self) -> NodeIter<Item> { NodeIter(Some(&self.head)) }
     
-    pub fn iter(&self) -> ListItemIter<C> {
+    pub fn iter(&self) -> ListItemIter<Item> {
         ListItemIter {
             node: Some(&self.head),
             index: 0,
@@ -671,13 +664,13 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         self.head.height as usize
     }
 
-    fn heads_mut(&mut self) -> &mut [SkipEntry<C>] {
+    fn heads_mut(&mut self) -> &mut [SkipEntry<Item>] {
         unsafe {
             std::slice::from_raw_parts_mut(self.head.nexts.as_mut_ptr(), self._nexts_padding.len())
         }
     }
 
-    fn is_head(&self, node: *const Node<C>) -> bool {
+    fn is_head(&self, node: *const Node<Item>) -> bool {
         node as *const _ == &self.head as *const _
     }
 
@@ -700,7 +693,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
             // let skip_over = self.get_top_entry();
             // println!("Skip over skip chars {}, num bytes {}", skip_over.skip_items, self.num_bytes);
 
-            let mut prev: [*const Node<C>; MAX_HEIGHT] = [ptr::null(); MAX_HEIGHT];
+            let mut prev: [*const Node<Item>; MAX_HEIGHT] = [ptr::null(); MAX_HEIGHT];
 
             let mut iter = [SkipEntry {
                 // Bleh.
@@ -721,7 +714,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
                 assert!(n.num_items as usize <= NODE_NUM_ITEMS);
 
                 // Make sure the number of items matches the count
-                let local_count = C::userlen_of_slice(n.content_slice());
+                let local_count = Item::userlen_of_slice(n.content_slice());
                 assert_eq!(local_count, n.get_userlen());
 
                 if Self::use_parents() {
@@ -797,10 +790,10 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     /// Returns (cursor, offset into the specified item).
     ///
     /// TODO: This should be Pin<&self>.
-    pub(super) fn cursor_at_userpos(&self, target_userpos: usize) -> (Cursor<C>, usize) {
+    pub(super) fn cursor_at_userpos(&self, target_userpos: usize) -> (Cursor<Item>, usize) {
         assert!(target_userpos <= self.len_user());
 
-        let mut e: *const Node<C> = &self.head;
+        let mut e: *const Node<Item> = &self.head;
         let mut height = self.height() - 1;
         
         let mut offset = target_userpos; // How many more items to skip
@@ -833,7 +826,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
                 // Record this and go down.
                 cursor.entries[height] = SkipEntry {
                     skip_usersize: offset,
-                    node: e as *mut Node<C>, // This is pretty gross
+                    node: e as *mut Node<Item>, // This is pretty gross
                 };
 
                 if height == 0 { break; } else { height -= 1; }
@@ -850,7 +843,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         while offset > 0 {
             assert!(index < en.num_items as usize);
             
-            let usersize = C::get_usersize(unsafe { &*en.items[index].as_ptr() });
+            let usersize = unsafe { &*en.items[index].as_ptr() }.get_usersize();
             if usersize > offset { break; } // We're in the middle of an item.
             offset -= usersize;
             index += 1;
@@ -864,10 +857,10 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     /// to calculate offsets. The offset and local_index parameters should
     /// specify the offset into the current node. They are accepted as-is.
     /// Offset *must* be at an item boundary
-    unsafe fn cursor_at_node(&self, n: *const Node<C>, mut offset: usize, local_index: usize) -> Cursor<C> {
+    unsafe fn cursor_at_node(&self, n: *const Node<Item>, mut offset: usize, local_index: usize) -> Cursor<Item> {
         assert!(Self::use_parents(), "cursor_at_node not available if notifications are disabled");
 
-        let mut n = n as *mut Node<C>; // We don't mutate, but we need a mut ptr.
+        let mut n = n as *mut Node<Item>; // We don't mutate, but we need a mut ptr.
 
         let mut cursor = Cursor {
             userpos: 0, // We'll set this later.
@@ -917,8 +910,8 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
 
     /// SAFETY: Self must outlast the marker and not have been moved since the
     /// marker was created. Self should really be Pin<>!
-    pub(super) unsafe fn cursor_at_marker<P>(&mut self, marker: ItemMarker<C>, predicate: P) -> Option<(Cursor<C>, usize)>
-    where P: Fn(&C::Item) -> Option<usize> {
+    pub(super) unsafe fn cursor_at_marker<P>(&mut self, marker: ItemMarker<Item>, predicate: P) -> Option<(Cursor<Item>, usize)>
+    where P: Fn(&Item) -> Option<usize> {
         // The marker gives us a pointer into a node. Find the item.
         let n = marker.ptr;
 
@@ -932,7 +925,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
                 local_index = Some(i);
                 break;
             } else {
-                offset += C::get_usersize(item);
+                offset += item.get_usersize();
             }
         }
 
@@ -945,9 +938,9 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     // the specified content. The passed cursor should point at the end of the
     // previous node. It will be updated to point to the end of the newly
     // inserted content.
-    // unsafe fn insert_node_at(&mut self, cursor: &mut Cursor<C>, contents: &[C::Item], new_userlen: usize, move_cursor: bool) {
-    unsafe fn insert_node_at<I>(&mut self, cursor: &mut Cursor<C>, contents: &mut I, num_items: usize, move_cursor: bool, notify: &mut N)
-            where I: Iterator<Item=C::Item> {
+    // unsafe fn insert_node_at(&mut self, cursor: &mut Cursor<Item>, contents: &[C::Item], new_userlen: usize, move_cursor: bool) {
+    unsafe fn insert_node_at<I>(&mut self, cursor: &mut Cursor<Item>, contents: &mut I, num_items: usize, move_cursor: bool, notify: &mut N)
+            where I: Iterator<Item=Item> {
 
         // println!("Insert_node_at {} len {}", contents.len(), self.num_bytes);
         // debug_assert_eq!(new_userlen, C::userlen_of_slice(contents));
@@ -959,10 +952,10 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         new_node.num_items = num_items as u8;
 
         for (slot, item) in new_node.items[..num_items].iter_mut().zip(contents) {
-            (slot.as_mut_ptr() as *mut C::Item).write(item); // Write makes sure we don't drop the old value.
+            (slot.as_mut_ptr() as *mut Item).write(item); // Write makes sure we don't drop the old value.
         }
 
-        let new_userlen = C::userlen_of_slice(new_node.content_slice());
+        let new_userlen = Item::userlen_of_slice(new_node.content_slice());
 
         let new_height = new_node.height;
         let new_height_usize = new_height as usize;
@@ -1047,8 +1040,8 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     }
 
     // unsafe fn insert_at_iter(&mut self, cursor: &mut Cursor<C>, contents: &[C::Item]) {
-    pub(super) unsafe fn insert_at_iter<I>(&mut self, cursor: &mut Cursor<C>, contents: &mut I, notify: &mut N)
-            where I: ExactSizeIterator<Item=C::Item> {
+    pub(super) unsafe fn insert_at_iter<I>(&mut self, cursor: &mut Cursor<Item>, contents: &mut I, notify: &mut N)
+            where I: ExactSizeIterator<Item=Item> {
         // iter specifies where to insert.
 
         let mut e = cursor.here_ptr();
@@ -1108,7 +1101,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
 
             (*e).num_items += num_inserted_items as u8;
             self.num_items += num_inserted_items;
-            let num_inserted_usercount = C::userlen_of_slice(dest_content_slice);
+            let num_inserted_usercount = Item::userlen_of_slice(dest_content_slice);
             self.num_usercount += num_inserted_usercount;
 
             // .... aaaand update all the offset amounts.
@@ -1178,7 +1171,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
                 // Passing false to indicate we don't want the cursor updated
                 // after this - it should remain at the end of the newly
                 // inserted content, which is *before* this end bit.
-                self.insert_node_at(cursor, &mut UninitOwnedIter::<C, N>::from_slice(end_items), end_items.len(), false, notify);
+                self.insert_node_at(cursor, &mut UninitOwnedIter::<Item, N>::from_slice(end_items), end_items.len(), false, notify);
             }
         }
     }
@@ -1194,7 +1187,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     /// If the deleted content occurs at the start of a node, the cursor passed
     /// here must point to the end of the previous node, not the start of the
     /// current node.
-    pub(super) unsafe fn del_at_iter(&mut self, cursor: &Cursor<C>, mut num_deleted_items: usize) {
+    pub(super) unsafe fn del_at_iter(&mut self, cursor: &Cursor<Item>, mut num_deleted_items: usize) {
         if num_deleted_items == 0 { return; }
 
         let mut item_idx = cursor.local_index;
@@ -1226,13 +1219,13 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
                 
                 let c = &mut (*e).items;
 
-                if mem::needs_drop::<C::Item>() {
+                if mem::needs_drop::<Item>() {
                     for item in &mut c[item_idx..item_idx + removed_here] {
                         ptr::drop_in_place(item.as_mut_ptr());
                     }
                 }
 
-                removed_userlen = C::userlen_of_slice(maybeinit_slice_get_ref(&c[item_idx..item_idx + removed_here]));
+                removed_userlen = Item::userlen_of_slice(maybeinit_slice_get_ref(&c[item_idx..item_idx + removed_here]));
                 if trailing_items > 0 {
                     ptr::copy(
                         &c[item_idx + removed_here],
@@ -1319,8 +1312,8 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     }
 
 
-    pub(super) unsafe fn replace_at_iter<I>(&mut self, cursor: &mut Cursor<C>, mut removed_items: usize, inserted_content: &mut I, notify: &mut N)
-            where I: ExactSizeIterator<Item=C::Item> {
+    pub(super) unsafe fn replace_at_iter<I>(&mut self, cursor: &mut Cursor<Item>, mut removed_items: usize, inserted_content: &mut I, notify: &mut N)
+            where I: ExactSizeIterator<Item=Item> {
         if removed_items == 0 && inserted_content.len() == 0 { return; }
 
         // Replace as many items from removed_items as we can with inserted_content.
@@ -1342,7 +1335,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
             let replaced_items_here = min(replaced_items, e_num_items - index);
 
             let dest = &mut (*e).items[index..index + replaced_items_here];
-            let old_usersize = C::userlen_of_slice(maybeinit_slice_get_ref(dest));
+            let old_usersize = Item::userlen_of_slice(maybeinit_slice_get_ref(dest));
 
             // Replace the items themselves. Everything else is commentary.
             // Would prefer to use zip() but it wants ownership of inserted_content :/
@@ -1351,7 +1344,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
             }
 
             let dest = maybeinit_slice_get_ref(dest);
-            let new_usersize = C::userlen_of_slice(dest);
+            let new_usersize = Item::userlen_of_slice(dest);
             let usersize_delta = new_usersize as isize - old_usersize as isize;
 
             if usersize_delta != 0 {
@@ -1387,7 +1380,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
         }
     }
 
-    pub(super) unsafe fn replace_item(&mut self, cursor: &mut Cursor<C>, new_item: C::Item, notify: &mut N) {
+    pub(super) unsafe fn replace_item(&mut self, cursor: &mut Cursor<Item>, new_item: Item, notify: &mut N) {
         // This could easily be optimized.
         self.replace_at_iter(cursor, 1, &mut iter::once(new_item), notify);
 
@@ -1398,7 +1391,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
     }
 
     // TODO: This is just for debugging. Do not export this.
-    pub fn print(&self) where C::Item: std::fmt::Debug {
+    pub fn print(&self) where Item: std::fmt::Debug {
         println!("items: {}\tuserlen: {}, height: {}", self.num_items, self.len_user(), self.head.height);
 
         print!("HEAD:");
@@ -1429,8 +1422,8 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> {
 
 
 
-impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> where C::Item: PartialEq {
-    pub fn eq_list(&self, other: &[C::Item]) -> bool {
+impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
+    pub fn eq_list<Rhs>(&self, other: &[Rhs]) -> bool where Item: PartialEq<Rhs> {
         let mut pos = 0;
         let other_len = other.len();
 
@@ -1448,7 +1441,7 @@ impl<C: ListConfig, N: NotifyTarget<C>> SkipList<C, N> where C::Item: PartialEq 
     }
 }
 
-impl<C: ListConfig, N: NotifyTarget<C>> Drop for SkipList<C, N> {
+impl<Item: ListItem, N: NotifyTarget<Item>> Drop for SkipList<Item, N> {
     fn drop(&mut self) {
         let mut node = self.head.first_skip_entry().node;
         unsafe {
@@ -1463,15 +1456,15 @@ impl<C: ListConfig, N: NotifyTarget<C>> Drop for SkipList<C, N> {
 
 
 // Only if there's no notification target.
-impl<I, C: ListConfig> From<I> for SkipList<C> where I: ExactSizeIterator<Item=C::Item> {
-    fn from(iter: I) -> SkipList<C> {
+impl<I, Item: ListItem> From<I> for SkipList<Item> where I: ExactSizeIterator<Item=Item> {
+    fn from(iter: I) -> SkipList<Item> {
         SkipList::new_from_iter(iter)
     }
 }
 
-impl<C: ListConfig, N: NotifyTarget<C>> Into<Vec<C::Item>> for &SkipList<C, N> where C::Item: Copy {
-    fn into(self) -> Vec<C::Item> {
-        let mut content: Vec<C::Item> = Vec::with_capacity(self.num_items);
+impl<Item: ListItem, N: NotifyTarget<Item>> Into<Vec<Item>> for &SkipList<Item, N> where Item: Copy {
+    fn into(self) -> Vec<Item> {
+        let mut content: Vec<Item> = Vec::with_capacity(self.num_items);
 
         for node in self.node_iter() {
             content.extend(node.content_slice().iter());
@@ -1481,27 +1474,27 @@ impl<C: ListConfig, N: NotifyTarget<C>> Into<Vec<C::Item>> for &SkipList<C, N> w
     }
 }
 
-impl<C: ListConfig, N: NotifyTarget<C>> fmt::Debug for SkipList<C, N> where C::Item: fmt::Debug {
+impl<Item: ListItem, N: NotifyTarget<Item>> fmt::Debug for SkipList<Item, N> where Item: fmt::Debug {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-impl<C: ListConfig, N: NotifyTarget<C>> Default for SkipList<C, N> {
+impl<Item: ListItem, N: NotifyTarget<Item>> Default for SkipList<Item, N> {
     fn default() -> Self {
         SkipList::new()
     }
 }
 
 
-pub struct ListItemIter<'a, C: ListConfig> {
-    node: Option<&'a Node<C>>,
+pub struct ListItemIter<'a, Item: ListItem> {
+    node: Option<&'a Node<Item>>,
     index: usize,
     remaining_items: usize // For size_hint.
 }
 
-impl<'a, C: ListConfig> Iterator for ListItemIter<'a, C> {
-    type Item = &'a C::Item;
+impl<'a, Item: ListItem> Iterator for ListItemIter<'a, Item> {
+    type Item = &'a Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(node) = self.node {
