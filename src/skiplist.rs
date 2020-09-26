@@ -111,13 +111,6 @@ impl<C: ListConfig> NotificationTarget<C> for () {
     fn notify(&mut self, _items: &[C::Item], _at_marker: ItemMarker<C>) {}
 }
 
-pub trait Queryable {
-    type Query;
-
-    // Returns Some(offset) into the item if its contained. Otherwise None.
-    fn contains_item(&self, query: &Self::Query) -> Option<usize>;
-}
-
 /// This represents a single entry in either the nexts pointers list or in an
 /// iterator.
 #[derive(Debug, PartialEq, Eq)]
@@ -867,6 +860,10 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         (cursor, offset)
     }
 
+    /// Create a cursor at the specified node, using the parents infrastructure
+    /// to calculate offsets. The offset and local_index parameters should
+    /// specify the offset into the current node. They are accepted as-is.
+    /// Offset *must* be at an item boundary
     unsafe fn cursor_at_node(&self, n: *const Node<C>, mut offset: usize, local_index: usize) -> Cursor<C> {
         assert!(Self::use_parents(), "cursor_at_node not available if notifications are disabled");
 
@@ -920,15 +917,18 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
 
     /// SAFETY: Self must outlast the marker and not have been moved since the
     /// marker was created. Self should really be Pin<>!
-    pub(super) unsafe fn cursor_at_marker(&mut self, marker: ItemMarker<C>, query: &<C::Item as Queryable>::Query) -> Cursor<C> where C::Item: Queryable {
+    pub(super) unsafe fn cursor_at_marker<P>(&mut self, marker: ItemMarker<C>, predicate: P) -> Option<(Cursor<C>, usize)>
+    where P: Fn(&C::Item) -> Option<usize> {
         // The marker gives us a pointer into a node. Find the item.
         let n = marker.ptr;
 
         let mut offset: usize = 0;
         let mut local_index = None;
+        let mut item_offset = 0;
         for (i, item) in (*n).content_slice().iter().enumerate() {
-            if let Some(item_offset) = item.contains_item(query) {
-                offset += item_offset;
+            if let Some(item_offset_) = predicate(item) {
+                // offset += item_offset;
+                item_offset = item_offset_;
                 local_index = Some(i);
                 break;
             } else {
@@ -936,8 +936,9 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
             }
         }
 
-        let local_index = local_index.expect("Invalid marker - item not found in node");
-        self.cursor_at_node(n, offset, local_index)
+        local_index.map(|local_index| {
+            (self.cursor_at_node(n, offset, local_index), item_offset)
+        })
     }
 
     // Internal fn to create a new node at the specified iterator filled with

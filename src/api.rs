@@ -134,11 +134,11 @@ impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
 pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> where Self: Sized {
     fn edit(self, userpos: usize) -> (Edit<'a, C, N>, usize);
 
-    fn edit_between(self, userpos: usize) -> Edit<'a, C, N>;
+    fn edit_exact(self, userpos: usize) -> Edit<'a, C, N>;
 
 
     fn replace_at<I: ExactSizeIterator<Item=C::Item>>(self, start_userpos: usize, removed_items: usize, inserted_content: I) {
-        self.edit_between(start_userpos).replace(removed_items, inserted_content);
+        self.edit_exact(start_userpos).replace(removed_items, inserted_content);
     }
 
     fn replace_at_slice(self, start_userpos: usize, removed_items: usize, inserted_content: &[C::Item]) where C::Item: Copy {
@@ -160,7 +160,7 @@ pub trait SimpleApi<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> where
     }
 
     fn del_at(self, userpos: usize, num_items: usize) {
-        self.edit_between(userpos).del(num_items)
+        self.edit_exact(userpos).del(num_items)
     }
 }
 
@@ -172,7 +172,7 @@ impl<'a, C: 'a + ListConfig> SimpleApi<'a, C, ()> for &'a mut SkipList<C> {
         (Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }, item_offset)
     }
 
-    fn edit_between(self, userpos: usize) -> Edit<'a, C> {
+    fn edit_exact(self, userpos: usize) -> Edit<'a, C> {
         let (cursor, item_offset) = self.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self, cursor, notify: unsafe { &mut NULL_NOTIFY_TARGET } }
@@ -185,7 +185,7 @@ impl<'a, C: 'a + ListConfig, N: 'a + NotificationTarget<C>> SimpleApi<'a, C, N> 
         (Edit { list: self.0, cursor, notify: self.1 }, item_offset)
     }
 
-    fn edit_between(self, userpos: usize) -> Edit<'a, C, N> {
+    fn edit_exact(self, userpos: usize) -> Edit<'a, C, N> {
         let (cursor, item_offset) = self.0.cursor_at_userpos(userpos);
         assert_eq!(item_offset, 0, "edit_between landed inside an item");
         Edit { list: self.0, cursor, notify: self.1 }
@@ -225,6 +225,25 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
     }
 
     pub fn edit_between_n<'a>(&'a mut self, notify: &'a mut N, userpos: usize) -> Edit<'a, C, N> {
-        (self, notify).edit_between(userpos)
+        (self, notify).edit_exact(userpos)
+    }
+
+    pub fn edit_at_marker_exact<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<C>, predicate: P) -> Option<Edit<'a, C, N>>
+    where P: Fn(&C::Item) -> bool {
+        unsafe {
+            self.cursor_at_marker(marker, |item| if predicate(item) { Some(0) } else { None })
+        }.map(move |(cursor, item_offset)| {
+            debug_assert_eq!(item_offset, 0, "Internal consistency violation");
+            Edit { list: self, cursor, notify }
+        })
+    }
+
+    pub fn edit_at_marker<'a, P>(&'a mut self, notify: &'a mut N, marker: ItemMarker<C>, predicate: P) -> Option<(Edit<'a, C, N>, usize)>
+    where P: Fn(&C::Item) -> Option<usize> {
+        unsafe {
+            self.cursor_at_marker(marker, predicate)
+        }.map(move |(cursor, item_offset)| {
+            (Edit { list: self, cursor, notify }, item_offset)
+        })
     }
 }

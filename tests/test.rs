@@ -220,7 +220,7 @@ mod test {
         };
         impl NotificationTarget<TestConfigFlat> for N {
             fn notify(&mut self, items: &[u8], at_marker: ItemMarker<TestConfigFlat>) {
-                assert_eq!(items, &[123]);
+                assert_eq!(items, &[1,2,3]);
                 self.count += 1; // Count
                 self.last = at_marker;
             }
@@ -229,9 +229,17 @@ mod test {
         let mut notify_target = N { count: 0, last: ItemMarker::null() };
 
         let mut list = SkipList::<TestConfigFlat, N>::new();
-        list.notify(&mut notify_target).insert_at_slice(0, &[123]);
+        list.notify(&mut notify_target).insert_at_slice(0, &[1,2,3]);
 
         assert_eq!(notify_target.count, 1);
+        
+        let marker = notify_target.last;
+        let edit = list.edit_at_marker_exact(&mut notify_target, marker, |item| *item == 2).unwrap();
+
+        assert_eq!(edit.prev_item(), Some(&1));
+        assert_eq!(edit.current_item(), Some(&2));
+
+        assert!(list.edit_at_marker(&mut notify_target, marker, |_item| None).is_none());
     }
 
 
