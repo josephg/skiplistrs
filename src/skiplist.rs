@@ -278,7 +278,7 @@ impl<C: ListConfig> Node<C> {
             node.write(Node {
                 items: uninit_items_array(),
                 num_items: 0,
-                height: height,
+                height,
                 parent: ptr::null_mut(),
                 nexts: [],
             });
@@ -500,16 +500,16 @@ impl<C: ListConfig> Cursor<C> {
         }
     }
 
-    pub(super) unsafe fn current_item_mut<'a>(&mut self) -> Option<&'a mut C::Item> {
-        let node = &mut *self.here_ptr();
-        if self.local_index < node.num_items as usize {
-            // Ok - just return the current item.
-            Some(&mut *(node.items[self.local_index].as_mut_ptr()))
-        } else {
-            // Peek the first item in the next node.
-            self.peek_next_item().map(|ptr| &mut *ptr)
-        }
-    }
+    // pub(super) unsafe fn current_item_mut<'a>(&mut self) -> Option<&'a mut C::Item> {
+    //     let node = &mut *self.here_ptr();
+    //     if self.local_index < node.num_items as usize {
+    //         // Ok - just return the current item.
+    //         Some(&mut *(node.items[self.local_index].as_mut_ptr()))
+    //     } else {
+    //         // Peek the first item in the next node.
+    //         self.peek_next_item().map(|ptr| &mut *ptr)
+    //     }
+    // }
 
     /// Get the pointer to the cursor's current node
     pub(super) fn here_ptr(&self) -> *mut Node<C> {
@@ -871,7 +871,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
 
         let mut cursor = Cursor {
             userpos: 0, // We'll set this later.
-            local_index: local_index,
+            local_index,
             entries: [SkipEntry {
                 node: &self.head as *const _ as *mut _,
                 skip_usersize: usize::MAX
@@ -1405,7 +1405,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> {
         for s in self.head.nexts() {
             print!(" |{} ", s.skip_usersize);
         }
-        println!("");
+        println!();
 
         use std::collections::HashMap;
         let mut ptr_to_id = HashMap::new();
@@ -1444,7 +1444,7 @@ impl<C: ListConfig, N: NotificationTarget<C>> SkipList<C, N> where C::Item: Part
             pos += my_data.len();
         }
 
-        return pos == other_len;
+        pos == other_len
     }
 }
 
@@ -1481,6 +1481,18 @@ impl<C: ListConfig, N: NotificationTarget<C>> Into<Vec<C::Item>> for &SkipList<C
     }
 }
 
+impl<C: ListConfig, N: NotificationTarget<C>> fmt::Debug for SkipList<C, N> where C::Item: fmt::Debug {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl<C: ListConfig, N: NotificationTarget<C>> Default for SkipList<C, N> {
+    fn default() -> Self {
+        SkipList::new()
+    }
+}
+
 
 pub struct ListItemIter<'a, C: ListConfig> {
     node: Option<&'a Node<C>>,
@@ -1506,12 +1518,6 @@ impl<'a, C: ListConfig> Iterator for ListItemIter<'a, C> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.remaining_items, Some(self.remaining_items))
-    }
-}
-
-impl<C: ListConfig, N: NotificationTarget<C>> fmt::Debug for SkipList<C, N> where C::Item: fmt::Debug {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.iter()).finish()
     }
 }
 

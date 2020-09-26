@@ -24,7 +24,7 @@ impl<'a, C: ListConfig, N: NotificationTarget<C>> Edit<'a, C, N> {
 
         if cfg!(debug_assertions) {
             let (c2, _) = self.list.cursor_at_userpos(self.cursor.userpos);
-            if &self.cursor != &c2 { panic!("Invalid cursor after delete"); }
+            if self.cursor != c2 { panic!("Invalid cursor after delete"); }
         }
     }
 
