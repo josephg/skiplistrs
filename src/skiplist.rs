@@ -111,6 +111,8 @@ impl ListItem for u16 {}
 impl ListItem for i16 {}
 impl ListItem for u32 {}
 impl ListItem for i32 {}
+impl ListItem for usize {}
+impl ListItem for isize {}
 impl ListItem for f32 {}
 impl ListItem for f64 {}
 
@@ -120,20 +122,22 @@ impl ListItem for &u16 {}
 impl ListItem for &i16 {}
 impl ListItem for &u32 {}
 impl ListItem for &i32 {}
+impl ListItem for &usize {}
+impl ListItem for &isize {}
 impl ListItem for &f32 {}
 impl ListItem for &f64 {}
 
 pub trait NotifyTarget<Item: ListItem> {
-    /// To turn off bookkeeping related to ItemMarker query lookups. The
-    /// optimizer will inline this
-    fn notifications_used() -> bool { true }
+    const USED: bool = true;
 
-    fn notify(&mut self, items: &[Item], at_marker: ItemMarker<Item>);
+    fn on_set(&mut self, items: &[Item], at_marker: ItemMarker<Item>);
+    fn on_delete(&mut self, items: &[Item]);
 }
 
 impl<Item: ListItem> NotifyTarget<Item> for () {
-    fn notifications_used() -> bool { false }
-    fn notify(&mut self, _items: &[Item], _at_marker: ItemMarker<Item>) {}
+    const USED: bool = false;
+    fn on_set(&mut self, _items: &[Item], _at_marker: ItemMarker<Item>) {}
+    fn on_delete(&mut self, _items: &[Item]) {}
 }
 
 /// This represents a single entry in either the nexts pointers list or in an
@@ -343,6 +347,14 @@ impl<Item: ListItem> Node<Item> {
     
     fn get_next_ptr(&self) -> *mut Node<Item> {
         self.first_skip_entry().node
+    }
+
+    pub(crate) fn iter(&self, local_index: usize) -> ListItemIter<Item> {
+        ListItemIter {
+            node: Some(&self),
+            index: local_index,
+            remaining_items: None
+        }
     }
 }
 
@@ -684,7 +696,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
         ListItemIter {
             node: Some(&self.head),
             index: 0,
-            remaining_items: self.len_items()
+            remaining_items: Some(self.len_items())
         }
     }
 
@@ -705,7 +717,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
 
     #[inline(always)]
     fn use_parents() -> bool {
-        cfg!(debug_assertions) || N::notifications_used()
+        cfg!(debug_assertions) || N::USED
     }
 
     /// Walk the list and validate internal constraints. This is used for
@@ -1062,7 +1074,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
             cursor.local_index = num_items;
         }
 
-        notify.notify(new_node.content_slice(), ItemMarker {
+        notify.on_set(new_node.content_slice(), ItemMarker {
             ptr: new_node_ptr,
             // _phantom: PhantomData
         });
@@ -1145,7 +1157,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
             cursor.userpos += num_inserted_usercount;
             cursor.local_index += num_inserted_items;
 
-            notify.notify(dest_content_slice, ItemMarker {
+            notify.on_set(dest_content_slice, ItemMarker {
                 ptr: e,
                 // _phantom: PhantomData
             });
@@ -1216,7 +1228,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
     /// If the deleted content occurs at the start of a node, the cursor passed
     /// here must point to the end of the previous node, not the start of the
     /// current node.
-    pub(super) unsafe fn del_at_iter(&mut self, cursor: &Cursor<Item>, mut num_deleted_items: usize) {
+    pub(super) unsafe fn del_at_iter(&mut self, cursor: &Cursor<Item>, mut num_deleted_items: usize, notify: &mut N) {
         if num_deleted_items == 0 { return; }
 
         let mut item_idx = cursor.local_index;
@@ -1248,6 +1260,10 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
                 
                 let c = &mut (*e).items;
 
+                if N::USED {
+                    notify.on_delete(maybeinit_slice_get_ref(&c[item_idx..item_idx + removed_here]));
+                }
+
                 if mem::needs_drop::<Item>() {
                     for item in &mut c[item_idx..item_idx + removed_here] {
                         ptr::drop_in_place(item.as_mut_ptr());
@@ -1273,6 +1289,10 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
                 // Remove the node from the skip list entirely. e should be the
                 // next node after the position of the iterator.
                 assert_ne!(cursor.here_ptr(), e);
+
+                if N::USED {
+                    notify.on_delete((*e).content_slice());
+                }
 
                 removed_userlen = (*e).get_userlen();
                 let next = (*e).first_skip_entry().node;
@@ -1392,7 +1412,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
             }
             cursor.userpos += new_usersize;
 
-            notify.notify(dest, ItemMarker {
+            notify.on_set(dest, ItemMarker {
                 ptr: e,
                 // _phantom: PhantomData,
             });
@@ -1405,7 +1425,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> SkipList<Item, N> {
             debug_assert!(removed_items == 0);
             self.insert_at_iter(cursor, inserted_content, notify);
         } else if removed_items > 0 {
-            self.del_at_iter(cursor, removed_items);
+            self.del_at_iter(cursor, removed_items, notify);
         }
     }
 
@@ -1491,6 +1511,13 @@ impl<I, Item: ListItem> From<I> for SkipList<Item> where I: ExactSizeIterator<It
     }
 }
 
+// Needs me to relax the ExactSizeIterator constraint on insert.
+// impl<Item: ListItem> iter::FromIterator<Item> for SkipList<Item> {
+//     fn from_iter<T: IntoIterator<Item = Item>>(iter: T) -> Self {
+//         SkipList::new_from_iter(iter)
+//     }
+// }
+
 impl<Item: ListItem, N: NotifyTarget<Item>> Into<Vec<Item>> for &SkipList<Item, N> where Item: Copy {
     fn into(self) -> Vec<Item> {
         let mut content: Vec<Item> = Vec::with_capacity(self.num_items);
@@ -1519,7 +1546,7 @@ impl<Item: ListItem, N: NotifyTarget<Item>> Default for SkipList<Item, N> {
 pub struct ListItemIter<'a, Item: ListItem> {
     node: Option<&'a Node<Item>>,
     index: usize,
-    remaining_items: usize // For size_hint.
+    remaining_items: Option<usize> // For size_hint, if known.
 }
 
 impl<'a, Item: ListItem> Iterator for ListItemIter<'a, Item> {
@@ -1539,7 +1566,11 @@ impl<'a, Item: ListItem> Iterator for ListItemIter<'a, Item> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining_items, Some(self.remaining_items))
+        if let Some(r) = self.remaining_items {
+            (r, Some(r))
+        } else {
+            (0, None)
+        }
     }
 }
 

@@ -231,17 +231,20 @@ mod test {
     }
 
     #[test]
-    fn notify() {
+    fn notify_insert() {
         #[derive(PartialEq)]
         struct N {
             count: u32,
             last: ItemMarker<u8>
         };
         impl NotifyTarget<u8> for N {
-            fn notify(&mut self, items: &[u8], at_marker: ItemMarker<u8>) {
+            fn on_set(&mut self, items: &[u8], at_marker: ItemMarker<u8>) {
                 assert_eq!(items, &[1,2,3]);
                 self.count += 1; // Count
                 self.last = at_marker;
+            }
+            fn on_delete(&mut self, _items: &[u8]) {
+                panic!("should not be called");
             }
         }
 
@@ -259,6 +262,43 @@ mod test {
         assert_eq!(edit.current_item(), Some(&2));
 
         assert!(unsafe { list.edit_at_marker(&mut notify_target, marker, |_item| None) }.is_none());
+    }
+
+    #[test]
+    fn notify_delete() {
+        const SIZE: usize = 2000;
+        #[derive(PartialEq)]
+        struct N([bool; SIZE]);
+
+        impl NotifyTarget<usize> for N {
+            fn on_set(&mut self, _items: &[usize], _at_marker: ItemMarker<usize>) { }
+            fn on_delete(&mut self, items: &[usize]) {
+                for i in items {
+                    assert_eq!(self.0[*i], false);
+                    self.0[*i] = true;
+                }
+            }
+        }
+
+        let len: usize = SIZE;
+        let mut content = Vec::<usize>::new();
+        // let mut rng = rand::thread_rng();
+        for i in 0..len {
+            content.push(i);
+        }
+
+        let mut notify = N([false; SIZE]);
+
+        let mut list = SkipList::new_from_iter_n(&mut notify, content.clone().into_iter());
+
+        // Delete everything but the first and last characters
+        list.notify(&mut notify).del_at(1, len - 2);
+
+        assert_eq!(notify.0[0], false);
+        assert_eq!(notify.0[SIZE-1], false);
+        for v in &notify.0[1..SIZE-1] {
+            assert_eq!(*v, true);
+        }
     }
 
 

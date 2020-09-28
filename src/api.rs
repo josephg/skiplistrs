@@ -1,7 +1,7 @@
 // This file contains the public facing editing API for skip lists.
 
 use std::iter;
-use {ListItem, NotifyTarget, SkipList, Cursor, ItemMarker};
+use {ListItem, ListItemIter, NotifyTarget, SkipList, Cursor, ItemMarker};
 
 pub struct Edit<'a, Item: ListItem, N: NotifyTarget<Item> = ()> {
     list: &'a mut SkipList<Item, N>,
@@ -20,7 +20,7 @@ impl<'a, Item: ListItem, N: NotifyTarget<Item>> Edit<'a, Item, N> {
     }
 
     pub fn del(&mut self, num_items: usize) {
-        unsafe { self.list.del_at_iter(&self.cursor, num_items); }
+        unsafe { self.list.del_at_iter(&self.cursor, num_items, &mut self.notify); }
 
         if cfg!(debug_assertions) {
             let (c2, _) = self.list.cursor_at_userpos(self.cursor.userpos);
@@ -113,7 +113,7 @@ impl<'a, Item: ListItem, N: NotifyTarget<Item>> Edit<'a, Item, N> {
             self.list.num_usercount = self.list.num_usercount.wrapping_add(usersize_delta as usize);
         }
 
-        self.notify.notify(std::slice::from_ref(item), ItemMarker {
+        self.notify.on_set(std::slice::from_ref(item), ItemMarker {
             ptr: self.cursor.here_ptr(),
             // _phantom: PhantomData,
         });
@@ -132,6 +132,15 @@ impl<'a, Item: ListItem, N: NotifyTarget<Item>> Edit<'a, Item, N> {
 
     pub fn user_position(&self) -> usize {
         self.cursor.userpos
+    }
+}
+
+impl<'a, Item: ListItem, N: NotifyTarget<Item>> IntoIterator for Edit<'a, Item, N> {
+    type Item = &'a Item;
+    type IntoIter = ListItemIter<'a, Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unsafe { &(*self.cursor.here_ptr()) }.iter(self.cursor.local_index)
     }
 }
 
